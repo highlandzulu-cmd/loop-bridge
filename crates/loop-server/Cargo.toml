@@ -15,6 +15,7 @@ loop-ai = { workspace = true }
 loop-agent = { workspace = true }
 loop-cli = { workspace = true }
 axum = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }

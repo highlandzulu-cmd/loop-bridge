@@ -21,6 +21,7 @@ use loop_agent::harness::AgentHarness;
 use loop_agent::AgentEvent;
 use loop_ai::providers::{faux_provider, FauxResponse, FauxScript};
 use loop_cli::runtime::{bootstrap, BootstrapOpts};
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Clone)]
 struct AppState {
@@ -96,10 +97,20 @@ async fn main() -> anyhow::Result<()> {
         harness: runtime.harness,
     };
 
+    // Permissive CORS for local development only: this lets a browser dev
+    // server on a different port (e.g. Vite on :5173) call this bridge on
+    // :8787. Tighten this (specific origin, no Any) before deploying anywhere
+    // this bridge isn't just talking to your own machine.
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/health", get(health))
         .route("/prompt", post(prompt_handler))
-        .with_state(state);
+        .with_state(state)
+        .layer(cors);
 
     let port: u16 = std::env::var("LOOP_SERVER_PORT")
         .ok()
