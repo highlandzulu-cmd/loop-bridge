@@ -4,6 +4,7 @@ members = [
     "crates/loop-ai",
     "crates/loop-agent",
     "crates/loop-cli",
+    "crates/loop-server",
 ]
 
 [workspace.package]
@@ -16,6 +17,7 @@ rust-version = "1.85"
 [workspace.dependencies]
 loop-ai = { path = "crates/loop-ai" }
 loop-agent = { path = "crates/loop-agent" }
+loop-cli = { path = "crates/loop-cli" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -56,6 +58,7 @@ rhai = { version = "1.21", default-features = false, features = ["std", "sync"] 
 rustyline = "15"
 unicode-width = "0.2"
 tokio-stream = { version = "0.1", features = ["sync"] }
+axum = "0.7"
 
 [profile.release]
 lto = true
