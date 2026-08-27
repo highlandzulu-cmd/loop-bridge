@@ -9,6 +9,9 @@ Production-grade AI harness in Rust by **Soket AI**: unified LLM API, stateful a
 | **loop-ai** | [`crates/loop-ai`](crates/loop-ai) | Unified LLM API, Soket provider (`/v1/models` refresh), OpenAI-compat + faux |
 | **loop-agent** | [`crates/loop-agent`](crates/loop-agent) | Agent loop, AgentHarness, tools, sessions, sandbox, skills |
 | **loop-cli** | [`crates/loop-cli`](crates/loop-cli) | Interactive `loop` TUI (ratatui) |
+| **loop-server** | [`crates/loop-server`](crates/loop-server/README.md) | HTTP/SSE bridge exposing `AgentHarness` to a web frontend, instead of the TUI |
+
+Plus [`web/`](web/README.md) — a browser chat UI (`pi-web-ui`) that talks to `loop-server`. Together, `loop-server` + `web/` are a second way to use the same unmodified harness the TUI uses — see their READMEs for the full picture (architecture diagram, config, known limitations).
 
 ## Quick start
 
@@ -17,6 +20,17 @@ cargo run -p loop-cli
 ```
 
 First run prompts for a Soket API key (or set `SOKET_API_KEY` / `TENSORSTUDIO_API_KEY` / `LOOP_API_KEY`). Config lives under `~/.loop/agent/`. See [`crates/loop-cli/README.md`](crates/loop-cli/README.md).
+
+### Browser UI instead of the TUI
+
+```bash
+./scripts/dev.sh
+```
+
+Builds and starts `loop-server` + `web/` together, opens on
+`http://localhost:5173`. Copy [`.env.example`](.env.example) to `.env` first
+to point it at a free local model via Ollama instead of Soket — see
+[`crates/loop-server/README.md`](crates/loop-server/README.md) for details.
 
 ## Build / test
 

@@ -50,8 +50,44 @@ struct PromptRequest {
     text: String,
 }
 
+/// Minimal `.env` loader — no dependency pulled in for this on purpose, to
+/// keep the crate's dependency footprint small for anyone vendoring/forking
+/// this bridge. Reads `KEY=VALUE` lines from `.env` in the current directory
+/// (blank lines and `#` comments ignored) and sets each as a process env var
+/// *unless it's already set* — an explicit `FOO=bar cargo run` on the
+/// command line always wins over the file, matching standard dotenv
+/// semantics. Missing file is fine (most deployments won't have one — e.g.
+/// CI, or a real provider configured via ~/.loop/agent/ instead).
+fn load_dotenv() {
+    let Ok(contents) = std::fs::read_to_string(".env") else {
+        return;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        // Strip one layer of matching quotes, e.g. FOO="bar baz" — plain
+        // KEY=VALUE with no quoting works fine without this.
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+            .unwrap_or(value);
+        if std::env::var_os(key).is_none() {
+            std::env::set_var(key, value);
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    load_dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();

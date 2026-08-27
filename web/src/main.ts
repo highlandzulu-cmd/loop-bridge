@@ -83,6 +83,17 @@ async function main() {
 		onApiKeyRequired: async () => true,
 	});
 
+	// setAgent() unconditionally turns this on with no way to opt out via its
+	// config param — but it's decorative here: the real model is fixed
+	// server-side at loop-server startup (LOOP_SERVER_MODEL), and picking a
+	// different one in this UI wouldn't do anything. Leaving it on would be
+	// actively misleading, so turn it back off on the property directly.
+	// Revisit if/when loop-server grows support for switching models at
+	// runtime instead of only at process startup.
+	if (chatPanel.agentInterface) {
+		chatPanel.agentInterface.enableModelSelector = false;
+	}
+
 	// Verified live, root-caused: pi-agent-core's Agent mutates state.messages
 	// in place (same array reference across turns) instead of replacing it.
 	// AgentInterface's internal agent.subscribe() handler does correctly call
