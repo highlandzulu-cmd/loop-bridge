@@ -241,7 +241,18 @@ async fn prompt_handler(
     let stream = async_stream::stream! {
         loop {
             match rx.recv().await {
-                Ok(value) => yield Ok(Event::default().data(value.to_string())),
+                Ok(value) => {
+                    // events_tx is one broadcast channel shared by every
+                    // request, so without this check the stream would sit
+                    // open forever after its own turn ends, waiting on
+                    // events from whatever turn some *other* request starts
+                    // next. Close it as soon as this turn's own end fires.
+                    let is_end = value.get("type").and_then(|t| t.as_str()) == Some("stream_end");
+                    yield Ok(Event::default().data(value.to_string()));
+                    if is_end {
+                        break;
+                    }
+                }
                 // We fell more than EVENTS_CHANNEL_CAPACITY events behind the
                 // harness (would need a very slow consumer + a very chatty
                 // turn) — skip the gap and keep going rather than stalling.
