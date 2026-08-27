@@ -95,11 +95,29 @@ async function main() {
 	// agent.state itself is correct at every point checked live. Cheapest fix
 	// without patching a third-party dependency: force the specific elements
 	// whose property-level change detection is being fooled to update anyway.
+	//
+	// Separate pi-agent-core bug also strands the send button after every
+	// turn. Root-caused live in agent.js: runWithLifecycle() emits "agent_end"
+	// from inside executor(), and only *after* that promise resolves does its
+	// `finally` block (finishRun()) set state.isStreaming = false — with no
+	// further notification to subscribers once it does. So requestUpdate()
+	// called synchronously from an "agent_end" handler (ours or
+	// AgentInterface's own internal one, which does call it) still observes
+	// isStreaming: true, re-renders to confirm the *streaming* look, and
+	// nothing ever prompts another render once it flips false a moment later.
+	// <message-editor>'s isStreaming (what the send button's icon/enabled
+	// state reads) is only ever assigned via a template binding inside
+	// AgentInterface's render(), so it's left stuck showing "stop" and the
+	// next message can't be sent. Fix: defer our requestUpdate() past the
+	// current microtask/macrotask so it runs after finishRun() — confirmed
+	// live this reliably un-sticks it every time.
 	agent.subscribe((event) => {
 		if (event.type === "agent_end" || event.type === "message_update") {
-			for (const el of chatPanel.querySelectorAll("message-list, streaming-message-container")) {
-				(el as { requestUpdate?: () => void }).requestUpdate?.();
-			}
+			setTimeout(() => {
+				for (const el of chatPanel.querySelectorAll("message-list, streaming-message-container, agent-interface")) {
+					(el as { requestUpdate?: () => void }).requestUpdate?.();
+				}
+			}, 0);
 		}
 	});
 
