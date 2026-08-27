@@ -19,13 +19,24 @@
  * renaming needed there. The only snake_case→camelCase rename needed is on the
  * event envelope itself: `content_index`→`contentIndex`, `tool_call`→`toolCall`.
  *
- * KNOWN LIMITATION: if a turn involves tool use, Loop's harness runs the full
- * model-call → tool-execution → model-call cycle server-side and may emit
- * more than one message_start/message_end pair within a single /prompt
- * response. This adapter (and pi-ai's EventStream) only carries the *first*
- * done/error through — later cycles in the same turn are currently dropped.
- * Fine for text-only replies (today's case); needs revisiting before relying
- * on multi-step tool-use turns end-to-end.
+ * TOOL USE: if a turn involves tool use, Loop's harness runs the full
+ * model-call → tool-execution → model-call cycle server-side and emits more
+ * than one message_start/message_end pair within a single /prompt response
+ * — one per round, each its own AgentEvent turn_start/turn_end, all inside
+ * one agent_start/agent_end. The intermediate message_end has
+ * stopReason "toolUse"; only the last round's message_end is the real end
+ * of the turn. Verified live: surfacing that intermediate one as "done"
+ * makes pi-agent-core's Agent think *it* owns tool execution (its `tools`
+ * array here is empty — see main.ts) — it then fails to find the tool
+ * ("Tool bash not found") and fires a follow-up request while loop-server
+ * is still mid-turn, which loop-server correctly 409s. So: only the first
+ * assistant message_start becomes a `start`, and only a message_end whose
+ * stopReason isn't "toolUse" becomes a `done`/`error` — intermediate rounds
+ * are dropped here and left to stream straight through to `done` (their
+ * text_delta events, if any, still flow into the one open message). This
+ * means an intermediate tool call itself isn't shown in the UI, only the
+ * final text — acceptable for now, but revisit if the UI should surface
+ * "ran tool X" as it happens.
  */
 import {
 	createAssistantMessageEventStream,
@@ -104,6 +115,10 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 				const reader = res.body.getReader();
 				const decoder = new TextDecoder();
 				let buffer = "";
+				// True once the turn's first assistant message_start has been
+				// forwarded as `start` — guards against re-emitting `start` for
+				// a later round's message_start within the same /prompt call.
+				let turnStarted = false;
 
 				while (true) {
 					const { value, done } = await reader.read();
@@ -137,7 +152,11 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 								// Only the assistant's message_start stands in for the LLM
 								// stream's own `start` — the user's own message_start (echoed
 								// earlier in the same turn) isn't an AssistantMessageEvent at all.
-								if (payload.message?.role === "assistant") {
+								// Guarded to fire once per /prompt call: a tool-use turn emits
+								// a second assistant message_start for its follow-up round,
+								// which must not reset pi-agent-core's already-open stream.
+								if (payload.message?.role === "assistant" && !turnStarted) {
+									turnStarted = true;
 									stream.push({ type: "start", partial: payload.message });
 								}
 								break;
@@ -145,12 +164,18 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 							case "message_end":
 								if (payload.message?.role === "assistant") {
 									const message = payload.message as AssistantMessage;
+									if (message.stopReason === "toolUse") {
+										// Intermediate round: Loop already executed the tool
+										// server-side and is about to call the model again with
+										// the result. Not the turn's real end — see file header.
+										break;
+									}
 									if (message.stopReason === "error" || message.stopReason === "aborted") {
 										stream.push({ type: "error", reason: message.stopReason, error: message });
 									} else {
 										stream.push({
 											type: "done",
-											reason: message.stopReason as "stop" | "length" | "toolUse",
+											reason: message.stopReason as "stop" | "length",
 											message,
 										});
 									}
