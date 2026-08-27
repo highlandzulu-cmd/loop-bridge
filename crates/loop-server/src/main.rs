@@ -9,23 +9,40 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
-use tokio::sync::mpsc;
-use tokio_stream::wrappers::UnboundedReceiverStream;
-use tokio_stream::StreamExt;
+use tokio::sync::broadcast;
 
-use loop_agent::harness::AgentHarness;
+use loop_agent::harness::{AgentHarness, AgentHarnessPhase};
 use loop_agent::AgentEvent;
 use loop_ai::providers::{faux_provider, FauxResponse, FauxScript};
 use loop_cli::runtime::{bootstrap, BootstrapOpts};
 use tower_http::cors::{Any, CorsLayer};
 
+/// Broadcast capacity: comfortably more than one turn's worth of events
+/// (start/text_delta-per-chunk/.../done plus Loop's own lifecycle wrapper
+/// events). A slow consumer that falls behind by more than this drops the
+/// oldest events (see `RecvError::Lagged` handling below) rather than
+/// blocking the harness — never blocking the one shared harness is the
+/// property that matters here.
+const EVENTS_CHANNEL_CAPACITY: usize = 1024;
+
 #[derive(Clone)]
 struct AppState {
     harness: Arc<AgentHarness>,
+    /// Every harness event, broadcast to whichever request is currently
+    /// listening. There's exactly one `subscribe()` registered on the
+    /// harness for the whole process (see `main`) — previously every
+    /// `/prompt` call added its own permanent listener directly on the
+    /// harness, which never got removed (`AgentHarness::subscribe` has no
+    /// unsubscribe) and leaked one closure per request for the life of the
+    /// process. Routing through a broadcast channel instead means each
+    /// request's listener is a cheap `Receiver` that's cleaned up
+    /// automatically when its SSE stream ends or the client disconnects.
+    events_tx: broadcast::Sender<serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -48,6 +65,26 @@ async fn main() -> anyhow::Result<()> {
     let model = std::env::var("LOOP_SERVER_MODEL").ok();
     let cwd = std::env::current_dir()?;
 
+    // Resume the same Loop session across restarts instead of silently
+    // starting a fresh (empty-history) one every time the process launches.
+    // First run: no file yet, bootstrap creates a new session, we persist
+    // its id. Later runs: read the id back and ask bootstrap to resume it.
+    // If the referenced session no longer exists in Loop's store (deleted,
+    // moved LOOP_CODING_AGENT_DIR, ...), bootstrap fails with a clear error
+    // rather than silently discarding history — delete the session file to
+    // start over deliberately.
+    let session_file = std::env::var("LOOP_SERVER_SESSION_FILE")
+        .unwrap_or_else(|_| ".loop-server-session-id".to_string());
+    let resume_session_id = std::fs::read_to_string(&session_file)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(id) = &resume_session_id {
+        tracing::info!("resuming session {id} (from {session_file})");
+    } else {
+        tracing::info!("no session file at {session_file} yet — starting a new session");
+    }
+
     tracing::info!("booting AgentHarness (provider={provider:?}, model={model:?}, cwd={cwd:?})");
 
     // Reuses loop-cli's own bootstrap: auth, models, session store, tools,
@@ -62,9 +99,11 @@ async fn main() -> anyhow::Result<()> {
         append_system_prompt: None,
         no_context_files: true,
         interactive: false,
-        session_id: None,
+        session_id: resume_session_id,
     })
     .await?;
+
+    std::fs::write(&session_file, &runtime.session_id)?;
 
     // Opt-in offline mode: swap in a scripted, zero-network "faux" model so
     // the whole bridge (harness -> events -> SSE -> browser) can be verified
@@ -93,18 +132,41 @@ async fn main() -> anyhow::Result<()> {
         runtime.settings.default_model
     );
 
+    // One subscription for the life of the process (see AppState::events_tx
+    // doc comment for why this replaced a per-request subscribe() call).
+    let (events_tx, _) = broadcast::channel::<serde_json::Value>(EVENTS_CHANNEL_CAPACITY);
+    let events_tx_sub = events_tx.clone();
+    runtime.harness.subscribe(move |ev: AgentEvent| {
+        let events_tx = events_tx_sub.clone();
+        async move {
+            // Err here just means no request is currently listening — not a
+            // problem; the harness itself is never blocked by this send.
+            let _ = events_tx.send(agent_event_to_json(&ev));
+        }
+    });
+
     let state = AppState {
         harness: runtime.harness,
+        events_tx,
     };
 
-    // Permissive CORS for local development only: this lets a browser dev
-    // server on a different port (e.g. Vite on :5173) call this bridge on
-    // :8787. Tighten this (specific origin, no Any) before deploying anywhere
-    // this bridge isn't just talking to your own machine.
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // CORS origin defaults to the Vite dev server this bridge was built
+    // against. Override with LOOP_SERVER_CORS_ORIGIN for a different
+    // frontend origin, or set it to "*" to allow any origin (fine for a
+    // throwaway local demo; never do this once this bridge is reachable
+    // from anywhere but your own machine — it holds no auth of its own).
+    let cors_origin =
+        std::env::var("LOOP_SERVER_CORS_ORIGIN").unwrap_or_else(|_| "http://localhost:5173".to_string());
+    let cors = if cors_origin == "*" {
+        tracing::warn!("LOOP_SERVER_CORS_ORIGIN=* — allowing any origin; fine for a local demo only");
+        CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any)
+    } else {
+        let origin: HeaderValue = cors_origin
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid LOOP_SERVER_CORS_ORIGIN {cors_origin:?}: {e}"))?;
+        tracing::info!("CORS restricted to origin {cors_origin}");
+        CorsLayer::new().allow_origin(origin).allow_methods(Any).allow_headers(Any)
+    };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -133,44 +195,67 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
 
 /// POST /prompt { "text": "..." } -> SSE stream of JSON events.
 ///
-/// NOTE: `AgentHarness::subscribe` has no unsubscribe. Each call to this
-/// endpoint registers one more permanent listener for the lifetime of the
-/// process, so events from later prompts also get pushed to earlier,
-/// long-closed streams (harmless — nothing is reading them — but it's a
-/// slow leak). Fine for a demo; revisit before real traffic.
+/// Rejects with 409 if the harness is already mid-turn, rather than the
+/// previous behavior of silently kicking off a call that would fail deep
+/// inside the harness (`AgentHarnessError::Busy`) with no clear signal to
+/// the caller. `AgentHarness::prompt` calls aren't meant to run concurrently
+/// against one harness — this is a fast, explicit check for that instead of
+/// finding out via a confusing error mid-stream.
 async fn prompt_handler(
     State(state): State<AppState>,
     Json(body): Json<PromptRequest>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let (tx, rx) = mpsc::unbounded_channel::<serde_json::Value>();
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<serde_json::Value>)> {
+    if state.harness.phase() != AgentHarnessPhase::Idle {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "harness_busy",
+                "message": "Loop is still working on a previous message. Wait for it to finish before sending another.",
+            })),
+        ));
+    }
 
-    let tx_events = tx.clone();
-    state.harness.subscribe(move |ev: AgentEvent| {
-        let tx = tx_events.clone();
-        async move {
-            let _ = tx.send(agent_event_to_json(&ev));
-        }
-    });
+    // Subscribed *before* spawning the prompt call below: a broadcast
+    // Receiver starts buffering from the moment it's created, so this
+    // ordering guarantees we can't miss the turn's earliest events to a
+    // scheduling race, regardless of when the SSE stream is first polled.
+    let mut rx = state.events_tx.subscribe();
 
     let harness = Arc::clone(&state.harness);
+    let events_tx = state.events_tx.clone();
     tokio::spawn(async move {
         match harness.prompt(body.text).await {
             Ok(_message) => {
                 // Loop's own AgentEvent::AgentEnd should already have gone
                 // out via subscribe(); this is a belt-and-suspenders signal
                 // for the frontend to close its EventSource.
-                let _ = tx.send(serde_json::json!({ "type": "stream_end" }));
+                let _ = events_tx.send(serde_json::json!({ "type": "stream_end" }));
             }
             Err(e) => {
-                let _ = tx.send(serde_json::json!({ "type": "error", "message": e.to_string() }));
-                let _ = tx.send(serde_json::json!({ "type": "stream_end" }));
+                let _ = events_tx.send(serde_json::json!({ "type": "error", "message": e.to_string() }));
+                let _ = events_tx.send(serde_json::json!({ "type": "stream_end" }));
             }
         }
     });
 
-    let stream = UnboundedReceiverStream::new(rx).map(|value| Ok(Event::default().data(value.to_string())));
+    let stream = async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(value) => yield Ok(Event::default().data(value.to_string())),
+                // We fell more than EVENTS_CHANNEL_CAPACITY events behind the
+                // harness (would need a very slow consumer + a very chatty
+                // turn) — skip the gap and keep going rather than stalling.
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("SSE consumer lagged, skipped {skipped} events");
+                    continue;
+                }
+                // events_tx dropped — process is shutting down.
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
 
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// Translate Loop's internal `AgentEvent` into the JSON shape the frontend

@@ -19,6 +19,7 @@ tower-http = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
+async-stream = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

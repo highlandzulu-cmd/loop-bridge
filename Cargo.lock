@@ -1533,6 +1533,7 @@ name = "loop-server"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "axum",
  "futures",
  "loop-agent",
