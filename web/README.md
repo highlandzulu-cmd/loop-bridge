@@ -49,8 +49,8 @@ config, not here.
 
 ## Bugs found and fixed here, worth knowing before touching this code
 
-All three were root-caused live (not guessed at) and are documented in
-detail at their fix site — this is just the index:
+All root-caused live (not guessed at) and documented in detail at their fix
+site — this is just the index:
 
 1. **SSE connection never closed** — fixed in `loop-server`, not here; see
    its `main.rs`. Symptom from this side: requests would hang open long
@@ -66,6 +66,15 @@ detail at their fix site — this is just the index:
    around in `main.ts` — see the comment right above the `agent.subscribe`
    call there for the full root cause and why the fix has to be deferred a
    tick.
+4. **Tool call visible while running, then a second bogus reply appeared**
+   — a follow-up fix on top of #2: once tool calls started being forwarded
+   for display, merging one into the *final* `done` message made
+   `pi-agent-core` try to execute it again regardless of `stopReason`
+   (its own `runLoop` checks for a `toolCall` in `content` unconditionally),
+   fail, inject a fake toolResult, then fire an empty-text follow-up
+   request. Caught live by inspecting `session.state.messages` after a
+   send. Fixed in `loop-stream.ts` (`filterFinal`) — toolCall blocks are
+   stripped before the true `done`, kept only in the streaming view.
 
 ## Known gaps / open work
 
@@ -75,9 +84,14 @@ detail at their fix site — this is just the index:
   refresh shows a blank chat even though the harness still remembers
   everything. Next message still uses the real server-side context
   correctly; it's a display-only gap.
-- **Tool calls aren't shown in the UI**, only the final text answer —
-  `loop-stream.ts` intentionally drops `toolcall_*` events for now (see its
-  header comment for why forwarding them naively would cause a UI flash).
+- **A tool call is only visible *while it's running*, not afterward.**
+  `loop-stream.ts` now forwards `toolcall_*` events so a running tool shows
+  up live, but strips that content back out before finalizing the message
+  (bug #4 above) — so it folds away once the turn completes. Showing it
+  permanently would need a `ToolResultMessage` spliced directly into
+  `agent.state.messages` from outside the `StreamFn` contract entirely —
+  a real architectural limit of this approach, not a bug left unfixed. See
+  the "WHAT THIS STILL CAN'T DO" note in `loop-stream.ts`'s header.
 - **The model selector in the UI is decorative.** `pi-web-ui` shows one by
   default (`enableModelSelector`), but the real model is fixed server-side
   at `loop-server` startup via `LOOP_SERVER_MODEL` — picking a different

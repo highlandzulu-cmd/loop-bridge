@@ -32,11 +32,51 @@
  * is still mid-turn, which loop-server correctly 409s. So: only the first
  * assistant message_start becomes a `start`, and only a message_end whose
  * stopReason isn't "toolUse" becomes a `done`/`error` — intermediate rounds
- * are dropped here and left to stream straight through to `done` (their
- * text_delta events, if any, still flow into the one open message). This
- * means an intermediate tool call itself isn't shown in the UI, only the
- * final text — acceptable for now, but revisit if the UI should surface
- * "ran tool X" as it happens.
+ * are dropped and folded into the one open message instead (see
+ * `accumulatedContent` below).
+ *
+ * SHOWING THE TOOL CALL ITSELF: verified by reading pi-agent-core's own
+ * streamAssistantResponse (agent-loop.js) — its accumulator does
+ * `partialMessage = event.partial` on every text/thinking/toolcall event,
+ * a full replace, not an append, and only finalizes on the one "done" it's
+ * allowed to see. So each intermediate round's finished content (typically
+ * just its toolCall block) has to be manually carried forward and prefixed
+ * onto every subsequent event's `partial.content` — otherwise it just gets
+ * overwritten the moment the next round's own text starts streaming in.
+ * That's what `accumulatedContent` + `withAccumulated` do below, and it's
+ * why toolcall_* is no longer excluded from the forwarded event types.
+ *
+ * WHAT THIS STILL CAN'T DO: show the tool's actual *result* as its own
+ * message bubble the way native pi-agent-core tool execution would.
+ * `ToolResultMessage` (role: "toolResult") is a wholly separate message
+ * type from `AssistantMessage` in pi-ai's type system — there's no content
+ * block for it, and a `StreamFn` (this file's whole contract) can only
+ * describe one assistant message stream. It has no channel to inject a
+ * second, separate message into `context.messages`. Real parity there
+ * would mean reaching into `agent.state.messages` directly from main.ts
+ * (outside the StreamFn contract entirely) after each /prompt call — a
+ * bigger, more invasive change, not done here.
+ *
+ * REGRESSION FOUND AND FIXED WHILE BUILDING THIS: the first version of this
+ * merged accumulated content — toolCall included — straight into the
+ * *final* `done` message too. Verified live this breaks things: runLoop's
+ * `toolCalls = message.content.filter(c => c.type === "toolCall")` check
+ * (agent-loop.js) runs unconditionally, regardless of `stopReason` — so a
+ * "done"/stop message that still contains a toolCall block makes
+ * pi-agent-core try to execute it anyway, fail (empty `tools`, same "Tool
+ * bash not found" as before), inject a real toolResult message saying so,
+ * and then fire a *second*, bogus loop-server request with empty text
+ * (the last message is no longer role "user" once that toolResult lands,
+ * so extractPromptText() below returns ""). Caught by inspecting
+ * `session.state.messages` live after a send — a fake toolResult and a
+ * hallucinated second assistant reply were both sitting right there.
+ * Fix: toolCall blocks are only ever included in the *streaming*
+ * (message_update) view for transient visibility while the tool is
+ * running — filterFinal() strips them back out before the true `done`, so
+ * the finalized message pi-agent-core actually keeps is clean text only.
+ * The tool call is visible while it runs, then folds away once the turn
+ * completes — a real limit of this StreamFn-based approach (see the
+ * previous note), not a bug left unfixed.
  */
 import {
 	createAssistantMessageEventStream,
@@ -58,6 +98,35 @@ function renameKeys(raw: Record<string, unknown>): Record<string, unknown> {
 		delete out.tool_call;
 	}
 	return out;
+}
+
+/**
+ * Prefix `accumulated` (finished earlier rounds' content blocks, e.g. a
+ * completed toolCall) onto this event's own `partial.content`. Needed
+ * because pi-agent-core's accumulator replaces its whole partial message on
+ * every event rather than merging — see the file header's "SHOWING THE
+ * TOOL CALL ITSELF" note for why forwarding events as-is would just lose
+ * earlier rounds' content the moment the next round starts streaming.
+ */
+/**
+ * Content safe to keep in the *finalized* message: everything except
+ * toolCall blocks. A finished toolCall left in a "done" message's content
+ * makes pi-agent-core try to execute it (see file header's "REGRESSION
+ * FOUND AND FIXED" note) — those are only ever safe to show transiently,
+ * during message_update.
+ */
+function filterFinal(content: AssistantMessage["content"]): AssistantMessage["content"] {
+	return content.filter((block) => block.type !== "toolCall");
+}
+
+function withAccumulated(
+	raw: Record<string, unknown>,
+	accumulated: AssistantMessage["content"],
+): Record<string, unknown> {
+	if (accumulated.length === 0) return raw;
+	const partial = raw.partial as { content?: unknown[] } | undefined;
+	if (!partial) return raw;
+	return { ...raw, partial: { ...partial, content: [...accumulated, ...(partial.content ?? [])] } };
 }
 
 function extractPromptText(context: Context): string {
@@ -119,6 +188,11 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 				// forwarded as `start` — guards against re-emitting `start` for
 				// a later round's message_start within the same /prompt call.
 				let turnStarted = false;
+				// Content blocks (typically a toolCall) from rounds already
+				// finished within this /prompt call — prefixed onto every later
+				// event via withAccumulated() so they survive into the final
+				// message instead of being overwritten. See file header.
+				const accumulatedContent: AssistantMessage["content"] = [];
 
 				while (true) {
 					const { value, done } = await reader.read();
@@ -168,15 +242,22 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 										// Intermediate round: Loop already executed the tool
 										// server-side and is about to call the model again with
 										// the result. Not the turn's real end — see file header.
+										// Carry its content (the toolCall) forward so it isn't
+										// lost once the next round's own content starts flowing.
+										accumulatedContent.push(...message.content);
 										break;
 									}
+									const mergedMessage: AssistantMessage = {
+										...message,
+										content: filterFinal([...accumulatedContent, ...message.content]),
+									};
 									if (message.stopReason === "error" || message.stopReason === "aborted") {
-										stream.push({ type: "error", reason: message.stopReason, error: message });
+										stream.push({ type: "error", reason: message.stopReason, error: mergedMessage });
 									} else {
 										stream.push({
 											type: "done",
 											reason: message.stopReason as "stop" | "length",
-											message,
+											message: mergedMessage,
 										});
 									}
 								}
@@ -188,8 +269,10 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 							case "thinking_start":
 							case "thinking_delta":
 							case "thinking_end":
-								// toolcall_* intentionally excluded for v1 — see file header note.
-								stream.push(renameKeys(payload) as AssistantMessageEvent);
+							case "toolcall_start":
+							case "toolcall_delta":
+							case "toolcall_end":
+								stream.push(withAccumulated(renameKeys(payload), accumulatedContent) as AssistantMessageEvent);
 								break;
 
 							default:
