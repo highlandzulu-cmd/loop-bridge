@@ -123,9 +123,40 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("booting AgentHarness (provider={provider:?}, model={model:?}, cwd={cwd:?})");
 
-    // Reuses loop-cli's own bootstrap: auth, models, session store, tools,
-    // sandbox. `interactive: false` means it fails fast instead of prompting
-    // at a terminal — see LOOP_API_KEY note in the README.
+    // Loop's harness itself (loop-agent, loop-ai) and loop-cli's runtime are
+    // used completely unmodified here — deliberately, so this bridge stays a
+    // separate, swappable consumer of Loop rather than a fork of it. The two
+    // steps below exist entirely in this crate for that reason, working
+    // around real headless-server landmines in bootstrap() purely through
+    // its existing public API (TrustStore, BootstrapOpts), no source changes:
+    //
+    // 1. bootstrap(interactive: false) — the only other option — bails with
+    //    a hard error unless a Soket-shaped key (SOKET_API_KEY /
+    //    TENSORSTUDIO_API_KEY / LOOP_API_KEY) is present, even when a
+    //    completely different provider (e.g. Ollama) is configured instead.
+    //    interactive: true avoids that bail. Verified against the source
+    //    (crates/loop-cli/src/runtime.rs, ensure_soket_api_key): the
+    //    "interactive" branch just returns Ok(true) and defers actual
+    //    prompting to TUI code this process never calls — so it can't hang
+    //    on that path by itself.
+    // 2. But interactive: true also flows into resolve_trust()'s project-
+    //    trust check, which — verified live — *does* do a real blocking
+    //    `rl.readline()` on stdin the first time a directory has no cached
+    //    trust decision. Fine for a real terminal, fatal for a headless
+    //    server with no one to answer it. Pre-seeding a trust decision
+    //    before bootstrap runs (via TrustStore's own public load/get/set)
+    //    makes resolve_trust's cache check short-circuit before ever
+    //    reaching that prompt.
+    {
+        use loop_cli::config::{get_agent_dir, trust_path, TrustStore};
+        let agent_dir = get_agent_dir();
+        let mut trust = TrustStore::load(trust_path(&agent_dir))?;
+        if trust.get(&cwd).is_none() {
+            trust.set(&cwd, true)?;
+            tracing::info!("no trust decision cached for {cwd:?} — trusting it (headless server, no one to ask)");
+        }
+    }
+
     let runtime = bootstrap(BootstrapOpts {
         cwd,
         provider,
@@ -134,7 +165,7 @@ async fn main() -> anyhow::Result<()> {
         system_prompt: None,
         append_system_prompt: None,
         no_context_files: true,
-        interactive: false,
+        interactive: true,
         session_id: resume_session_id,
     })
     .await?;

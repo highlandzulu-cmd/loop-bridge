@@ -288,41 +288,20 @@ pub async fn bootstrap(opts: BootstrapOpts) -> anyhow::Result<Runtime> {
     }
 
     let credentials = Arc::new(FileCredentialStore::open(auth_path(&agent_dir))?);
-    // Both the Soket credential check and the Soket catalog refresh below are
-    // only relevant when Soket is the selected provider. Gating them avoids
-    // requiring a Soket key (or hitting the network at all) for callers that
-    // configured a different provider (a local Ollama, a custom endpoint, or
-    // the offline `faux` provider).
-    let using_soket = settings.default_provider == SOKET_PROVIDER_ID;
-    let needs_api_key_setup = if using_soket {
-        ensure_soket_api_key(&credentials, opts.interactive)?
-    } else {
-        false
-    };
+    let needs_api_key_setup = ensure_soket_api_key(&credentials, opts.interactive)?;
 
     let models = build_models(&agent_dir, Arc::clone(&credentials))?;
-    if using_soket && !needs_api_key_setup {
-        // Bounded: an unreachable/slow network path here must not hang
-        // bootstrap indefinitely. The static seed catalog (registered in
-        // build_models) already lets model resolution below succeed even if
-        // this refresh times out or fails.
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            models.refresh(ModelsRefreshOptions {
+    if !needs_api_key_setup {
+        let refresh = models
+            .refresh(ModelsRefreshOptions {
                 allow_network: Some(true),
                 force: true,
                 provider_id: Some(SOKET_PROVIDER_ID.into()),
-            }),
-        )
-        .await
-        {
-            Ok(refresh) => {
-                for (pid, err) in &refresh.errors {
-                    tracing::warn!("model refresh {pid}: {err}");
-                }
-            }
-            Err(_) => {
-                tracing::warn!("model refresh soket: timed out after 5s, continuing with seed catalog");
+            })
+            .await;
+        if !refresh.errors.is_empty() {
+            for (pid, err) in &refresh.errors {
+                tracing::warn!("model refresh {pid}: {err}");
             }
         }
     }
