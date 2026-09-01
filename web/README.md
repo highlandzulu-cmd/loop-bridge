@@ -75,6 +75,23 @@ site — this is just the index:
    request. Caught live by inspecting `session.state.messages` after a
    send. Fixed in `loop-stream.ts` (`filterFinal`) — toolCall blocks are
    stripped before the true `done`, kept only in the streaming view.
+5. **Attachments (PDF/image) silently vanished, attachment and typed text
+   both** — `pi-agent-core`'s own default `convertToLlm` filters messages
+   down to only `role: "user"/"assistant"/"toolResult"`, silently, no
+   error. Attaching a file produces `role: "user-with-attachments"`, which
+   that filter just drops — the whole turn, not just the attachment.
+   `main.ts` never overrode it. Fixed by wiring in `pi-web-ui`'s own
+   `defaultConvertToLlm` (also publicly exported) via the `Agent`'s
+   `convertToLlm` option — it correctly unpacks that role into the
+   attachment's extracted text as a normal text block. Verified live and
+   unambiguously: a synthetic attachment containing a random marker string
+   came back quoted in the model's response.
+
+Related, hit separately (fixed in `../vite.config.ts`, not here): the
+first PDF attached in a dev session could also fail outright with
+`Setting up fake worker failed` — Vite's on-demand dependency
+pre-bundling racing pdfjs-dist's worker setup. `optimizeDeps.exclude:
+["pdfjs-dist"]` sidesteps it.
 
 ## Known gaps / open work
 
