@@ -84,6 +84,36 @@ real tool execution; verified live against all four tools (`bash`, `read`,
 specifically before trusting it — plain chat working is not evidence tool
 use will.
 
+### Running against the real hosted model (verified working)
+
+A second, real (non-local) option confirmed working: `https://api.tensorstudio.ai/v1`
+— the same endpoint Loop's own live test suite targets (see the root
+README's "Live OpenAI-compatible tests" section) — authenticates
+successfully with a bearer key (ask whoever's managing access for the
+current one; not written here on purpose — see the note below) and serves
+several real production models, `qwen3-30b` among them (Soket's own
+default test model — 30B parameters, vs. the 1.5B local one above).
+Verified live: both plain chat and a real `bash` tool-call round trip
+work correctly, each well under a second.
+
+To use it, add to `~/.loop/agent/models.json`:
+```json
+{
+  "id": "tensorstudio-litellm",
+  "name": "TensorStudio (LiteLLM)",
+  "baseUrl": "https://api.tensorstudio.ai/v1",
+  "apiKeyEnv": ["TENSORSTUDIO_LITELLM_KEY"],
+  "models": ["qwen3-30b", "llama-3.1-8b-instruct", "qwen25-7b", "gpt-oss-120b", "kimi3", "deepseek-v4-flash", "ox-alpha", "nemotron-super-free"]
+}
+```
+Set `TENSORSTUDIO_LITELLM_KEY` (the real key value — **never commit this**,
+keep it only in a local, gitignored `.env`) and
+`LOOP_SERVER_PROVIDER=tensorstudio-litellm` / `LOOP_SERVER_MODEL=qwen3-30b`.
+
+Where this key/endpoint actually comes from, who else has access, and
+whether it's meant for shared/ongoing use hasn't been confirmed — treat it
+as provisional until that's clarified.
+
 ## API
 
 - `GET /health` → `{"session_id": "...", "status": "ok"}`
