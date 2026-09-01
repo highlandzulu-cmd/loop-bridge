@@ -5,6 +5,7 @@ import {
 	AppStorage,
 	ChatPanel,
 	CustomProvidersStore,
+	defaultConvertToLlm,
 	IndexedDBStorageBackend,
 	ProviderKeysStore,
 	SessionsStore,
@@ -71,6 +72,15 @@ async function main() {
 			tools: [], // Loop executes tools server-side; nothing to register here (see loop-stream.ts).
 		},
 		streamFn: createLoopStreamFn({ baseUrl: LOOP_SERVER_URL }),
+		// pi-agent-core's own default convertToLlm drops any message whose
+		// role isn't exactly "user"/"assistant"/"toolResult" — silently, no
+		// error. An attached PDF/image produces role "user-with-attachments",
+		// so without this override that whole turn (attachment AND any typed
+		// text alongside it) vanished before reaching loop-stream.ts, and the
+		// harness saw nothing. pi-web-ui ships its own convertToLlm that
+		// properly unpacks that role into a normal "user" message with the
+		// attachment's extracted text folded in — this just opts into it.
+		convertToLlm: defaultConvertToLlm,
 	});
 
 	const chatPanel = new ChatPanel();
