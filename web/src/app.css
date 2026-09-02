@@ -157,3 +157,22 @@ assistant-message {
 	padding-left: 12px;
 	margin: 8px 16px;
 }
+
+/* Message input box: pi-web-ui's own rounded-xl + shadow-sm read as a
+   generic chat-app input; the reference layout's is flatter and more
+   square, matching its own cards. Tightened to the same --radius/border
+   the rest of this shell's cards use, no shadow. Colors (bg-card,
+   border-border, text-foreground, etc.) already come from our theme
+   overrides above — this only touches shape. */
+message-editor .rounded-xl {
+	border-radius: var(--radius) !important;
+	box-shadow: none !important;
+}
+
+message-editor textarea {
+	font-family: var(--font-sans);
+}
+
+message-editor textarea::placeholder {
+	font-family: var(--font-sans);
+}
