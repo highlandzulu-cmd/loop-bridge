@@ -134,6 +134,26 @@ as provisional until that's clarified.
   canonicalizes outside the project root with `403`/`404` — verified live,
   including with a `../../../etc/passwd`-style traversal attempt and a
   bare absolute path, both correctly blocked.
+- `GET /terminal/ws` → upgrades to a WebSocket carrying a real, interactive
+  shell in a real PTY (via `portable-pty`), spawned in the harness's cwd.
+  Protocol: client sends Binary frames of raw keystroke bytes (written
+  straight to the PTY) and Text frames as JSON `{"cols","rows"}` for
+  resize; server sends Binary frames of raw PTY output. This is the same
+  level of access the model's own `bash` tool already has — a human
+  typing directly instead of the model deciding what to run — not a new
+  category of risk for this bridge (see "no auth, unsandboxed" below).
+  Verified two ways: a raw WebSocket client with zero UI involved (real
+  shell prompt with the actual machine's hostname, real ANSI escape
+  sequences, a real command's real output — see `src/main.rs`'s
+  `handle_terminal_socket` for how the blocking PTY read/write is bridged
+  to the async socket), and by instrumenting `WebSocket.prototype.send` in
+  a live page to confirm `xterm.js`'s `onData` correctly produces a send
+  for both regular keys and Enter. Driving it through actual mouse/keyboard
+  browser automation to get a full screen-recorded round trip proved
+  unreliable in this environment specifically — `xterm.js` reads from a
+  hidden, off-screen textarea, a well-known hard case for synthetic input
+  tools, unrelated to whether the feature itself works. Real typing in a
+  real browser goes through none of that.
 
 ## Known limitations / open work
 

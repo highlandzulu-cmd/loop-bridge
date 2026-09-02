@@ -5,16 +5,20 @@
 //! Server-Sent Events.
 
 use std::convert::Infallible;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
+use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::broadcast;
 
 use loop_agent::harness::{AgentHarness, AgentHarnessPhase};
@@ -247,6 +251,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/prompt", post(prompt_handler))
         .route("/files", get(list_files))
         .route("/files/content", get(read_file_content))
+        .route("/terminal/ws", get(terminal_ws))
         .with_state(state)
         .layer(cors);
 
@@ -536,4 +541,140 @@ fn agent_event_to_json(ev: &AgentEvent) -> serde_json::Value {
             "is_error": is_error,
         }),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct ResizeMsg {
+    cols: u16,
+    rows: u16,
+}
+
+/// GET /terminal/ws -> upgrades to a WebSocket carrying a real, interactive
+/// shell in a real PTY (via portable-pty), spawned in the harness's cwd.
+/// This is the same level of access the model's own `bash` tool already
+/// has — a human typing directly instead of the model deciding what to
+/// run — not a new category of risk for this bridge (see the README's
+/// "no auth, unsandboxed" note).
+///
+/// Protocol: client sends Binary frames for raw keystrokes (written
+/// straight to the PTY) and Text frames as JSON `{"cols","rows"}` for
+/// resize; server sends Binary frames of raw PTY output. Reading/writing
+/// the PTY is blocking (portable-pty's API, not tokio's), so both run on
+/// dedicated OS threads bridged to the async socket via channels rather
+/// than blocking the runtime.
+async fn terminal_ws(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_terminal_socket(socket, state.cwd.clone()))
+}
+
+async fn handle_terminal_socket(mut socket: WebSocket, cwd: PathBuf) {
+    let pty_system = native_pty_system();
+    let pair = match pty_system.openpty(PtySize {
+        rows: 24,
+        cols: 80,
+        pixel_width: 0,
+        pixel_height: 0,
+    }) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("\r\nfailed to open pty: {e}\r\n"))).await;
+            return;
+        }
+    };
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.cwd(&cwd);
+
+    let mut child = match pair.slave.spawn_command(cmd) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("\r\nfailed to spawn {shell}: {e}\r\n"))).await;
+            return;
+        }
+    };
+    // Dropping the slave end in the parent process is required — otherwise
+    // the PTY never sees EOF-equivalent conditions correctly and the
+    // reader thread below can hang around after the child actually exits.
+    drop(pair.slave);
+
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("\r\nfailed to open pty reader: {e}\r\n"))).await;
+            return;
+        }
+    };
+    let mut writer = match pair.master.take_writer() {
+        Ok(w) => w,
+        Err(e) => {
+            let _ = socket.send(Message::Text(format!("\r\nfailed to open pty writer: {e}\r\n"))).await;
+            return;
+        }
+    };
+    let master = pair.master;
+
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if out_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(data) = in_rx.recv() {
+            if writer.write_all(&data).is_err() {
+                break;
+            }
+            let _ = writer.flush();
+        }
+    });
+
+    loop {
+        tokio::select! {
+            chunk = out_rx.recv() => {
+                match chunk {
+                    Some(bytes) => {
+                        if socket.send(Message::Binary(bytes)).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Binary(data))) => {
+                        if in_tx.send(data).is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(resize) = serde_json::from_str::<ResizeMsg>(&text) {
+                            let _ = master.resize(PtySize {
+                                rows: resize.rows,
+                                cols: resize.cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let _ = child.kill();
 }

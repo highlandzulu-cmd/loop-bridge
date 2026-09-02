@@ -60,6 +60,7 @@ unicode-width = "0.2"
 tokio-stream = { version = "0.1", features = ["sync"] }
 axum = "0.7"
 tower-http = { version = "0.5", features = ["cors"] }
+portable-pty = "0.8"
 
 [profile.release]
 lto = true

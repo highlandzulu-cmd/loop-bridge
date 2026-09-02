@@ -1,4 +1,5 @@
 import "./app.css";
+import "@xterm/xterm/css/xterm.css";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { Model } from "@mariozechner/pi-ai";
 import {
@@ -13,6 +14,8 @@ import {
 	setAppStorage,
 } from "@mariozechner/pi-web-ui";
 import { html, render } from "lit";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
 import { createLoopStreamFn } from "./loop-stream.js";
 
 // Bridge URL — the Rust loop-server from crates/loop-server.
@@ -254,6 +257,62 @@ async function main() {
 		`;
 	};
 
+	// Real interactive terminal: xterm.js talking to loop-server's
+	// /terminal/ws, which spawns a real PTY-backed shell server-side (see
+	// loop-server's handle_terminal_socket). Container element created once
+	// and referenced by identity in renderShell's template — same pattern
+	// as chatPanel — so lit-html preserves it (and the live xterm.js/socket
+	// inside it) across unrelated re-renders instead of tearing it down
+	// every time e.g. Files is clicked.
+	const terminalContainer = document.createElement("div");
+	terminalContainer.style.cssText = "height: 100%; width: 100%;";
+	let terminalStarted = false;
+
+	const startTerminal = () => {
+		if (terminalStarted) return;
+		terminalStarted = true;
+
+		// Deferred to the next frame: called from the tab-click handler, at
+		// which point terminalContainer is still `display:none` from the
+		// *previous* render (renderApp() hasn't run yet to flip it visible).
+		// Verified live: fit()-ing a hidden (zero-size) container computes
+		// garbage cols/rows, which the shell then draws its first prompt
+		// into — a visibly wrapped, repeated-looking prompt, not a crash,
+		// so easy to miss without actually looking. One rAF is enough time
+		// for the now-visible layout to settle before fit() measures it.
+		requestAnimationFrame(() => {
+			const term = new Terminal({ fontFamily: "inherit", fontSize: 12, cursorBlink: true });
+			const fit = new FitAddon();
+			term.loadAddon(fit);
+			term.open(terminalContainer);
+			fit.fit();
+
+			const wsUrl = LOOP_SERVER_URL.replace(/^http/, "ws") + "/terminal/ws";
+			const ws = new WebSocket(wsUrl);
+			ws.binaryType = "arraybuffer";
+
+			ws.onopen = () => {
+				ws.send(JSON.stringify({ cols: term.cols, rows: term.rows }));
+			};
+			ws.onmessage = (ev) => {
+				term.write(new Uint8Array(ev.data as ArrayBuffer));
+			};
+			ws.onerror = () => term.writeln("\r\n[connection error]");
+			ws.onclose = () => term.writeln("\r\n[disconnected]");
+
+			term.onData((data) => {
+				if (ws.readyState === WebSocket.OPEN) ws.send(new TextEncoder().encode(data));
+			});
+
+			new ResizeObserver(() => {
+				fit.fit();
+				if (ws.readyState === WebSocket.OPEN) {
+					ws.send(JSON.stringify({ cols: term.cols, rows: term.rows }));
+				}
+			}).observe(terminalContainer);
+		});
+	};
+
 	const renderShell = () =>
 		html`
 			<div class="pw-shell">
@@ -289,6 +348,7 @@ async function main() {
 									@click=${() => {
 										activeTab = tab;
 										renderApp();
+										if (tab === "terminal") startTerminal();
 									}}
 								>
 									${tab[0]!.toUpperCase()}${tab.slice(1)}
@@ -296,10 +356,9 @@ async function main() {
 							`,
 						)}
 					</div>
-					<div class="pw-panel-body">
+					<div class="pw-panel-body" style="${activeTab === "terminal" ? "padding:0" : ""}">
 						${activeTab === "files" ? renderFilesPanel() : ""}
 						${activeTab === "git" ? notWired("Git") : ""}
-						${activeTab === "terminal" ? notWired("Terminal") : ""}
 						${activeTab === "info"
 							? html`
 									<div class="flex flex-col gap-3">
@@ -307,12 +366,15 @@ async function main() {
 										<div><strong>Session:</strong> ${sessionId}</div>
 										<div class="pw-not-wired" style="text-align:left">
 											This is a phase-1 visual shell recreating pi-web.dev's layout around our
-											real chat (see web/README.md). Files/Git/Terminal are placeholders —
-											wiring them up for real is a separate, later task.
+											real chat (see web/README.md). Git is still a placeholder — Files and
+											Terminal are real now.
 										</div>
 									</div>
 								`
 							: ""}
+						<div style="height:100%; display:${activeTab === "terminal" ? "block" : "none"}">
+							${terminalContainer}
+						</div>
 					</div>
 				</aside>
 			</div>

@@ -7,7 +7,7 @@ it's a renderer. Every real action (running a shell command, editing a
 file) happens server-side in `loop-server`/`AgentHarness`; see that crate's
 README for the architecture diagram.
 
-## Layout — phase 1 of 2, Files now real
+## Layout — phase 1 of 2, Files and Terminal now real
 
 The 3-column shell (sidebar / chat / tabbed side panel) in `main.ts` +
 `app.css` is modeled on [pi-web.dev](https://pi-web.dev) (a separate,
@@ -21,14 +21,26 @@ libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
   README for the API and the path-traversal protection backing it).
   Click a folder to navigate in, a file to preview its content, "← .."
   to go back up.
-- Git/Terminal tabs are still **honest placeholders** — they say plainly
-  that `loop-server` has no git/terminal backend, rather than faking
-  data that isn't real
+- **Terminal tab is real** — `xterm.js` talking to `loop-server`'s
+  `GET /terminal/ws`, which spawns an actual PTY-backed shell server-side
+  (see that crate's README for the protocol and how it's verified). The
+  container element (`terminalContainer`) is created once and referenced
+  by identity in the template, same pattern as `chatPanel`, so switching
+  tabs doesn't tear down and reconnect the live session. One real bug
+  fixed here: `FitAddon.fit()` called while the panel was still
+  `display:none` (before the tab-switch re-render made it visible)
+  measured a zero-size container and computed garbage terminal
+  dimensions — visible as a wrapped, repeated-looking first prompt, not a
+  crash, easy to miss without actually looking closely. Fixed by
+  deferring the whole `xterm.js`/WebSocket setup one `requestAnimationFrame`
+  past the tab click, after the container is actually laid out.
+- Git tab is still an **honest placeholder** — says plainly that
+  `loop-server` has no git backend, rather than faking data that isn't real
 - The chat column is the actual, fully working bridge — same as before
 
-**Still not done:** git status/diff and a real terminal connection need
-their own backend work in `loop-server` — each comparable in scope to what
-Files just took. Revisit if wanted.
+**Still not done:** git status/diff needs its own backend work in
+`loop-server`, comparable in scope to what Files and Terminal just took.
+Revisit if wanted.
 
 ## Running it
 

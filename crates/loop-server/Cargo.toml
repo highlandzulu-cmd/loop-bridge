@@ -14,8 +14,9 @@ path = "src/main.rs"
 loop-ai = { workspace = true }
 loop-agent = { workspace = true }
 loop-cli = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["ws"] }
 tower-http = { workspace = true }
+portable-pty = { workspace = true }
 tokio = { workspace = true, features = ["net", "signal"] }
 tokio-stream = { workspace = true }
 futures = { workspace = true }
