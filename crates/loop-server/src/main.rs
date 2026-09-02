@@ -6,9 +6,10 @@
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
@@ -43,6 +44,11 @@ struct AppState {
     /// request's listener is a cheap `Receiver` that's cleaned up
     /// automatically when its SSE stream ends or the client disconnects.
     events_tx: broadcast::Sender<serde_json::Value>,
+    /// Root the /files endpoints are scoped to — the harness's own cwd, i.e.
+    /// the project directory. `resolve_safe_path` rejects anything that
+    /// canonicalizes outside this, so /files can't be used to browse the
+    /// rest of the filesystem.
+    cwd: PathBuf,
 }
 
 #[derive(serde::Deserialize)]
@@ -158,7 +164,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let runtime = bootstrap(BootstrapOpts {
-        cwd,
+        cwd: cwd.clone(),
         provider,
         model,
         theme: None,
@@ -215,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         harness: runtime.harness,
         events_tx,
+        cwd,
     };
 
     // CORS origin defaults to the Vite dev server this bridge was built
@@ -238,6 +245,8 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/prompt", post(prompt_handler))
+        .route("/files", get(list_files))
+        .route("/files/content", get(read_file_content))
         .with_state(state)
         .layer(cors);
 
@@ -258,6 +267,128 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "status": "ok",
         "session_id": state.harness.session_id().await,
     }))
+}
+
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+fn api_error(status: StatusCode, error: &str) -> ApiError {
+    (status, Json(serde_json::json!({ "error": error })))
+}
+
+/// Resolves `relative` against `root` and rejects anything that
+/// canonicalizes outside of it — the only thing standing between /files and
+/// letting a browser tab read arbitrary files on this machine. Requires the
+/// target to actually exist: `canonicalize()` fails on a path that doesn't,
+/// which is also the correct rejection (no distinction leaked between
+/// "doesn't exist" and "exists but forbidden").
+fn resolve_safe_path(root: &Path, relative: &str) -> Result<PathBuf, ApiError> {
+    let joined = root.join(relative.trim_start_matches('/'));
+    let canonical = joined
+        .canonicalize()
+        .map_err(|_| api_error(StatusCode::NOT_FOUND, "not_found"))?;
+    let root_canonical = root
+        .canonicalize()
+        .map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "server_misconfigured"))?;
+    if !canonical.starts_with(&root_canonical) {
+        return Err(api_error(StatusCode::FORBIDDEN, "outside_project_root"));
+    }
+    Ok(canonical)
+}
+
+#[derive(serde::Deserialize)]
+struct FilesQuery {
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(serde::Serialize)]
+struct FileEntry {
+    name: String,
+    is_dir: bool,
+    size: u64,
+}
+
+/// GET /files?path=relative/dir -> directory listing, scoped to the
+/// harness's cwd (the project directory). `.git`/`node_modules`/`target`
+/// are filtered out — noisy, not useful to browse from a chat UI panel;
+/// they're still fully reachable by the model's own `bash`/`read` tools,
+/// this is purely about what this specific browser panel shows.
+async fn list_files(
+    State(state): State<AppState>,
+    Query(q): Query<FilesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let dir = resolve_safe_path(&state.cwd, &q.path)?;
+    let meta = std::fs::metadata(&dir).map_err(|_| api_error(StatusCode::NOT_FOUND, "not_found"))?;
+    if !meta.is_dir() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "not_a_directory"));
+    }
+
+    let read_dir =
+        std::fs::read_dir(&dir).map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    let mut entries: Vec<FileEntry> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == ".git" || name == "node_modules" || name == "target" {
+            continue;
+        }
+        let Ok(entry_meta) = entry.metadata() else { continue };
+        entries.push(FileEntry {
+            name,
+            is_dir: entry_meta.is_dir(),
+            size: entry_meta.len(),
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+
+    Ok(Json(serde_json::json!({ "path": q.path, "entries": entries })))
+}
+
+#[derive(serde::Deserialize)]
+struct FileContentQuery {
+    path: String,
+}
+
+/// Preview cap: large enough for real source files, small enough that a
+/// misclick on a big log/binary doesn't try to ship megabytes to the panel.
+const MAX_FILE_PREVIEW_BYTES: u64 = 256 * 1024;
+
+/// GET /files/content?path=relative/file -> that file's content, scoped the
+/// same way list_files is. Binary and over-size files return a message
+/// instead of their bytes rather than erroring — the caller can still tell
+/// what happened.
+async fn read_file_content(
+    State(state): State<AppState>,
+    Query(q): Query<FileContentQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let file_path = resolve_safe_path(&state.cwd, &q.path)?;
+    let meta = std::fs::metadata(&file_path).map_err(|_| api_error(StatusCode::NOT_FOUND, "not_found"))?;
+    if meta.is_dir() {
+        return Err(api_error(StatusCode::BAD_REQUEST, "is_a_directory"));
+    }
+    if meta.len() > MAX_FILE_PREVIEW_BYTES {
+        return Ok(Json(serde_json::json!({
+            "path": q.path,
+            "size": meta.len(),
+            "content": null,
+            "message": format!(
+                "{} bytes — larger than the {}KB preview limit.",
+                meta.len(),
+                MAX_FILE_PREVIEW_BYTES / 1024
+            ),
+        })));
+    }
+
+    let bytes =
+        std::fs::read(&file_path).map_err(|e| api_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(Json(serde_json::json!({ "path": q.path, "size": meta.len(), "content": content }))),
+        Err(_) => Ok(Json(serde_json::json!({
+            "path": q.path,
+            "size": meta.len(),
+            "content": null,
+            "message": "Binary file — not shown.",
+        }))),
+    }
 }
 
 /// POST /prompt { "text": "..." } -> SSE stream of JSON events.

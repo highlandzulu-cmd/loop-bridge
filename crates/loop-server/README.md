@@ -124,6 +124,16 @@ as provisional until that's clarified.
 - Returns `409 Conflict` if a turn is already in progress — this harness
   processes one turn at a time; wait for the current one to finish (or for
   `stream_end`) before sending the next `/prompt`.
+- `GET /files?path=relative/dir` → `{"path": "...", "entries": [{"name", "is_dir", "size"}]}`,
+  a directory listing scoped to the harness's cwd (the project directory).
+  `.git`/`node_modules`/`target` are filtered out. `path` defaults to the
+  root when omitted.
+- `GET /files/content?path=relative/file` → `{"path", "size", "content"}`
+  (`content` is `null` with a `message` instead, for binary files or ones
+  over the 256KB preview cap). Both endpoints reject anything that
+  canonicalizes outside the project root with `403`/`404` — verified live,
+  including with a `../../../etc/passwd`-style traversal attempt and a
+  bare absolute path, both correctly blocked.
 
 ## Known limitations / open work
 

@@ -153,9 +153,10 @@ async function main() {
 	}
 
 	// Phase 1 shell: recreates pi-web.dev's layout (sidebar, chat, tabbed side
-	// panel) around our real, working chat. Files/Git/Terminal panels are
-	// honest placeholders, not fake data — loop-server has no file/git/
-	// terminal backend yet (see web/README.md "Phase 2").
+	// panel) around our real, working chat. Git/Terminal panels are honest
+	// placeholders — loop-server has no backend for those yet (see
+	// web/README.md "Phase 2"). Files is real now: GET /files and
+	// /files/content in loop-server, scoped to the project directory.
 	type PanelTab = "files" | "git" | "terminal" | "info";
 	let activeTab: PanelTab = "info";
 
@@ -165,6 +166,93 @@ async function main() {
 			The chat on the left is the real, working part.
 		</div>
 	`;
+
+	interface FileEntry {
+		name: string;
+		is_dir: boolean;
+		size: number;
+	}
+	interface FileContent {
+		path: string;
+		size: number;
+		content: string | null;
+		message?: string;
+	}
+
+	let filesPath = "";
+	let filesEntries: FileEntry[] | null = null;
+	let filesError: string | null = null;
+	let filesLoaded = false;
+	let selectedFile: FileContent | null = null;
+
+	const loadFiles = async (path: string) => {
+		filesPath = path;
+		selectedFile = null;
+		filesError = null;
+		try {
+			const res = await fetch(`${LOOP_SERVER_URL}/files?path=${encodeURIComponent(path)}`);
+			if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+			filesEntries = (await res.json()).entries;
+		} catch (err) {
+			filesEntries = null;
+			filesError = err instanceof Error ? err.message : String(err);
+		}
+		filesLoaded = true;
+		renderApp();
+	};
+
+	const openFile = async (path: string) => {
+		selectedFile = null;
+		filesError = null;
+		try {
+			const res = await fetch(`${LOOP_SERVER_URL}/files/content?path=${encodeURIComponent(path)}`);
+			if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+			selectedFile = await res.json();
+		} catch (err) {
+			filesError = err instanceof Error ? err.message : String(err);
+		}
+		renderApp();
+	};
+
+	const renderFilesPanel = () => {
+		if (!filesLoaded) {
+			loadFiles("");
+			return html`<div>Loading…</div>`;
+		}
+		if (selectedFile) {
+			return html`
+				<div class="flex flex-col gap-2">
+					<button class="pw-tab" @click=${() => loadFiles(filesPath)}>← ${filesPath || "/"}</button>
+					<div style="font-weight:600">${selectedFile.path}</div>
+					${selectedFile.content !== null
+						? html`<pre style="white-space:pre-wrap; word-break:break-word; font-size:11.5px">${selectedFile.content}</pre>`
+						: html`<div class="pw-not-wired">${selectedFile.message}</div>`}
+				</div>
+			`;
+		}
+		const parent = filesPath.includes("/") ? filesPath.slice(0, filesPath.lastIndexOf("/")) : "";
+		return html`
+			<div class="flex flex-col gap-1">
+				<div style="font-weight:600; margin-bottom:4px">/${filesPath}</div>
+				${filesPath
+					? html`<button class="pw-tab" style="align-self:flex-start" @click=${() => loadFiles(parent)}>← ..</button>`
+					: ""}
+				${filesError ? html`<div class="pw-not-wired">${filesError}</div>` : ""}
+				${(filesEntries ?? []).map((entry) => {
+					const entryPath = filesPath ? `${filesPath}/${entry.name}` : entry.name;
+					return html`
+						<button
+							class="pw-tab"
+							style="justify-content:flex-start; text-align:left"
+							@click=${() => (entry.is_dir ? loadFiles(entryPath) : openFile(entryPath))}
+						>
+							${entry.is_dir ? "📁" : "📄"} ${entry.name}
+						</button>
+					`;
+				})}
+			</div>
+		`;
+	};
 
 	const renderShell = () =>
 		html`
@@ -209,7 +297,7 @@ async function main() {
 						)}
 					</div>
 					<div class="pw-panel-body">
-						${activeTab === "files" ? notWired("Files") : ""}
+						${activeTab === "files" ? renderFilesPanel() : ""}
 						${activeTab === "git" ? notWired("Git") : ""}
 						${activeTab === "terminal" ? notWired("Terminal") : ""}
 						${activeTab === "info"
