@@ -1,1 +1,159 @@
 @import "@mariozechner/pi-web-ui/app.css";
+
+/* Warm cream / monospace theme, modeled on the pi-web.dev screenshot.
+   Overrides pi-web-ui's own theme variables — see web/README.md. */
+:root {
+	--background: oklch(0.975 0.008 90);
+	--foreground: oklch(0.25 0.01 90);
+	--card: oklch(0.975 0.008 90);
+	--card-foreground: oklch(0.25 0.01 90);
+	--popover: oklch(0.99 0.005 90);
+	--popover-foreground: oklch(0.25 0.01 90);
+	--primary: oklch(0.62 0.13 295);
+	--primary-foreground: oklch(0.99 0 0);
+	--secondary: oklch(0.94 0.01 90);
+	--secondary-foreground: oklch(0.3 0.01 90);
+	--muted: oklch(0.95 0.01 90);
+	--muted-foreground: oklch(0.5 0.01 90);
+	--accent: oklch(0.6 0.1 175);
+	--accent-foreground: oklch(0.99 0 0);
+	--border: oklch(0.88 0.01 90);
+	--input: oklch(0.88 0.01 90);
+	--ring: oklch(0.62 0.13 295);
+	--font-sans: "SF Mono", ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+	--radius: 0.5rem;
+}
+
+body {
+	font-family: var(--font-sans);
+	font-size: 13px;
+}
+
+.pw-shell {
+	display: grid;
+	grid-template-columns: 240px 1fr 320px;
+	height: 100vh;
+	background: var(--background);
+	color: var(--foreground);
+}
+
+.pw-sidebar {
+	border-right: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	overflow-y: auto;
+	min-width: 0;
+}
+
+.pw-sidebar-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	border-bottom: 1px solid var(--border);
+	font-weight: 700;
+	letter-spacing: 0.02em;
+}
+
+.pw-section-label {
+	font-size: 11px;
+	letter-spacing: 0.08em;
+	color: var(--muted-foreground);
+	padding: 14px 16px 6px;
+	display: flex;
+	justify-content: space-between;
+}
+
+.pw-card {
+	margin: 0 12px 8px;
+	padding: 10px 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--card);
+	cursor: default;
+}
+
+.pw-card.active {
+	border-color: var(--primary);
+	background: color-mix(in oklch, var(--primary) 8%, var(--card));
+}
+
+.pw-card-title {
+	font-weight: 600;
+	font-size: 12.5px;
+}
+
+.pw-card-sub {
+	font-size: 11px;
+	color: var(--muted-foreground);
+	margin-top: 2px;
+}
+
+.pw-chat-col {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	border-right: 1px solid var(--border);
+}
+
+.pw-panel {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.pw-tabs {
+	display: flex;
+	gap: 2px;
+	padding: 8px;
+	border-bottom: 1px solid var(--border);
+	flex-wrap: wrap;
+}
+
+.pw-tab {
+	font-size: 12px;
+	padding: 6px 10px;
+	border-radius: var(--radius);
+	border: 1px solid transparent;
+	background: transparent;
+	cursor: pointer;
+	color: var(--muted-foreground);
+	font-family: inherit;
+}
+
+.pw-tab.active {
+	background: var(--secondary);
+	color: var(--foreground);
+	border-color: var(--border);
+}
+
+.pw-panel-body {
+	padding: 16px;
+	overflow-y: auto;
+	flex: 1;
+	font-size: 12.5px;
+	color: var(--muted-foreground);
+}
+
+.pw-panel-body .pw-not-wired {
+	border: 1px dashed var(--border);
+	border-radius: var(--radius);
+	padding: 24px 16px;
+	text-align: center;
+	line-height: 1.6;
+}
+
+/* Message bubbles: colored left border + role label, matching the screenshot */
+.user-message-container {
+	border-left: 3px solid var(--primary);
+	border-radius: 4px !important;
+	background: color-mix(in oklch, var(--primary) 6%, var(--background)) !important;
+	position: relative;
+}
+
+assistant-message {
+	display: block;
+	border-left: 3px solid var(--accent);
+	padding-left: 12px;
+	margin: 8px 16px;
+}

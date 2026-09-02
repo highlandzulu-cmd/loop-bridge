@@ -142,18 +142,96 @@ async function main() {
 		}
 	});
 
-	render(
+	// Real session id from the running bridge — shown in the sidebar instead
+	// of fabricating one. Health check also doubles as "is loop-server up".
+	let sessionId = "unknown";
+	try {
+		const health = await fetch(`${LOOP_SERVER_URL}/health`).then((r) => r.json());
+		sessionId = health.session_id ?? "unknown";
+	} catch {
+		// loop-server not reachable yet — sidebar just shows "unknown".
+	}
+
+	// Phase 1 shell: recreates pi-web.dev's layout (sidebar, chat, tabbed side
+	// panel) around our real, working chat. Files/Git/Terminal panels are
+	// honest placeholders, not fake data — loop-server has no file/git/
+	// terminal backend yet (see web/README.md "Phase 2").
+	type PanelTab = "files" | "git" | "terminal" | "info";
+	let activeTab: PanelTab = "info";
+
+	const notWired = (label: string) => html`
+		<div class="pw-not-wired">
+			${label} isn't wired up yet — loop-server doesn't have a ${label.toLowerCase()} backend.<br />
+			The chat on the left is the real, working part.
+		</div>
+	`;
+
+	const renderShell = () =>
 		html`
-			<div class="w-full h-screen flex flex-col bg-background text-foreground overflow-hidden">
-				<div class="flex items-center gap-2 px-4 py-2 border-b border-border shrink-0">
-					<span class="text-base font-semibold">Loop Chat</span>
-					<span class="text-xs text-muted-foreground">— talking to ${LOOP_SERVER_URL}</span>
-				</div>
-				${chatPanel}
+			<div class="pw-shell">
+				<aside class="pw-sidebar">
+					<div class="pw-sidebar-header">
+						<span>LOOP CHAT</span>
+					</div>
+					<div class="pw-section-label"><span>PROJECT</span></div>
+					<div class="pw-card active">
+						<div class="pw-card-title">loop</div>
+						<div class="pw-card-sub">~/Desktop/loop</div>
+					</div>
+					<div class="pw-section-label"><span>MODEL</span></div>
+					<div class="pw-card">
+						<div class="pw-card-title">${LOOP_SERVER_URL}</div>
+						<div class="pw-card-sub">set via LOOP_SERVER_MODEL in .env</div>
+					</div>
+					<div class="pw-section-label"><span>SESSION</span></div>
+					<div class="pw-card active">
+						<div class="pw-card-title">${sessionId.slice(0, 18)}${sessionId.length > 18 ? "…" : ""}</div>
+						<div class="pw-card-sub">persisted server-side by loop-server</div>
+					</div>
+				</aside>
+
+				<div class="pw-chat-col">${chatPanel}</div>
+
+				<aside class="pw-panel">
+					<div class="pw-tabs">
+						${(["files", "git", "terminal", "info"] as PanelTab[]).map(
+							(tab) => html`
+								<button
+									class="pw-tab ${activeTab === tab ? "active" : ""}"
+									@click=${() => {
+										activeTab = tab;
+										renderApp();
+									}}
+								>
+									${tab[0]!.toUpperCase()}${tab.slice(1)}
+								</button>
+							`,
+						)}
+					</div>
+					<div class="pw-panel-body">
+						${activeTab === "files" ? notWired("Files") : ""}
+						${activeTab === "git" ? notWired("Git") : ""}
+						${activeTab === "terminal" ? notWired("Terminal") : ""}
+						${activeTab === "info"
+							? html`
+									<div class="flex flex-col gap-3">
+										<div><strong>Bridge:</strong> ${LOOP_SERVER_URL}</div>
+										<div><strong>Session:</strong> ${sessionId}</div>
+										<div class="pw-not-wired" style="text-align:left">
+											This is a phase-1 visual shell recreating pi-web.dev's layout around our
+											real chat (see web/README.md). Files/Git/Terminal are placeholders —
+											wiring them up for real is a separate, later task.
+										</div>
+									</div>
+								`
+							: ""}
+					</div>
+				</aside>
 			</div>
-		`,
-		app,
-	);
+		`;
+
+	const renderApp = () => render(renderShell(), app!);
+	renderApp();
 }
 
 main();

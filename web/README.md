@@ -7,6 +7,28 @@ it's a renderer. Every real action (running a shell command, editing a
 file) happens server-side in `loop-server`/`AgentHarness`; see that crate's
 README for the architecture diagram.
 
+## Layout — phase 1 of 2
+
+The 3-column shell (sidebar / chat / tabbed side panel) in `main.ts` +
+`app.css` is modeled on [pi-web.dev](https://pi-web.dev) (a separate,
+full-featured product built on the same `pi-web-ui`/`pi-agent-core`
+libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
+This is **phase 1: the visual shell only**, built around our real, working
+chat:
+
+- Sidebar (Project/Model/Session) shows real data from `loop-server`'s
+  `/health` endpoint and `.env` — not fabricated
+- Files/Git/Terminal tabs are **honest placeholders** — they say plainly
+  that `loop-server` has no file/git/terminal backend, rather than faking
+  data that isn't real
+- The chat column is the actual, fully working bridge — same as before
+
+**Phase 2, not done here:** wiring up real file browser / git / terminal
+panels needs actual backend support added to `loop-server` first (reading
+the real filesystem, running real git commands, a real terminal
+connection) — comparable in scope to everything else in this crate, not a
+frontend task. Revisit if that's wanted.
+
 ## Running it
 
 From the repo root:
