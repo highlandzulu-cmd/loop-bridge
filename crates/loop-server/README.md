@@ -125,15 +125,24 @@ as provisional until that's clarified.
   processes one turn at a time; wait for the current one to finish (or for
   `stream_end`) before sending the next `/prompt`.
 - `GET /files?path=relative/dir` → `{"path": "...", "entries": [{"name", "is_dir", "size"}]}`,
-  a directory listing scoped to the harness's cwd (the project directory).
-  `.git`/`node_modules`/`target` are filtered out. `path` defaults to the
-  root when omitted.
+  a directory listing scoped to `files_root` in `AppState` — **`/`, the
+  whole filesystem, not just the project directory.** Widened from
+  project-directory-only on explicit user request/confirmation (this is a
+  real, deliberate change to what an unauthenticated network endpoint can
+  read — not a default to restore casually). `.git`/`node_modules`/`target`
+  are still filtered out of listings for noise, but that's cosmetic, not a
+  boundary — nothing stops navigating into them directly or reading a file
+  inside one via `/files/content`. `path` defaults to `/` when omitted.
 - `GET /files/content?path=relative/file` → `{"path", "size", "content"}`
   (`content` is `null` with a `message` instead, for binary files or ones
-  over the 256KB preview cap). Both endpoints reject anything that
-  canonicalizes outside the project root with `403`/`404` — verified live,
-  including with a `../../../etc/passwd`-style traversal attempt and a
-  bare absolute path, both correctly blocked.
+  over the 256KB preview cap). Both endpoints still reject anything that
+  canonicalizes outside `files_root` with `403`/`404` — `resolve_safe_path`
+  itself is unchanged, only what root it's called with changed, so a
+  `../../../etc/passwd`-style traversal attempt still gets normalized and
+  checked the same way, it's just that `files_root` being `/` means
+  `/etc/passwd` now legitimately resolves inside it. Terminal's shell
+  (below) still opens in the harness's actual project cwd, unaffected —
+  that's a separate field (`AppState.cwd`), deliberately not widened.
 - `GET /terminal/ws` → upgrades to a WebSocket carrying a real, interactive
   shell in a real PTY (via `portable-pty`), spawned in the harness's cwd.
   Protocol: client sends Binary frames of raw keystroke bytes (written
@@ -165,5 +174,12 @@ as provisional until that's clarified.
   make the model run arbitrary shell commands on this machine. Loop itself
   supports sandboxed execution (`krun`/`podman`) and a tool-approval system;
   neither is wired up here yet. Do not expose this past `localhost` as-is.
-- No auth on `/prompt` at all — CORS origin-restriction is the only guard,
-  and that's a browser-enforced convention, not a real security boundary.
+- No auth on `/prompt`, `/files`, `/files/content`, or `/terminal/ws` at
+  all — CORS origin-restriction is the only guard, and that's a
+  browser-enforced convention (irrelevant to a direct `curl`/WebSocket
+  client), not a real security boundary.
+- `/files`/`/files/content` read anywhere on the filesystem the process's
+  user can read — this is the same access level `bash`/`terminal` already
+  had, just reachable through a simpler read-only HTTP GET too. Worth
+  weighing specifically before deploying this anywhere reachable by more
+  than yourself.

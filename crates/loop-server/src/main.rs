@@ -48,11 +48,23 @@ struct AppState {
     /// request's listener is a cheap `Receiver` that's cleaned up
     /// automatically when its SSE stream ends or the client disconnects.
     events_tx: broadcast::Sender<serde_json::Value>,
-    /// Root the /files endpoints are scoped to — the harness's own cwd, i.e.
-    /// the project directory. `resolve_safe_path` rejects anything that
-    /// canonicalizes outside this, so /files can't be used to browse the
-    /// rest of the filesystem.
+    /// Where /terminal/ws spawns its shell — the harness's own cwd, the
+    /// project directory. A terminal opening at the filesystem root
+    /// wouldn't be useful; this stays scoped to the project on purpose,
+    /// independent of files_root below.
     cwd: PathBuf,
+    /// Root the /files endpoints are scoped to. Deliberately "/" — the
+    /// whole filesystem, not just the project directory — per explicit
+    /// confirmation (this widens what's reachable through an
+    /// unauthenticated network endpoint; not a decision to make silently).
+    /// `resolve_safe_path` still canonicalizes and checks containment, so
+    /// this isn't a code path that trusts input blindly — it's just that
+    /// "/" makes the containment check basically unrestrictive. Same level
+    /// of read access the model's own bash/read tools already have
+    /// unrestricted (see "no auth, unsandboxed" below) — this exposes that
+    /// same existing access through a browser panel, not a new category
+    /// of it.
+    files_root: PathBuf,
 }
 
 #[derive(serde::Deserialize)]
@@ -226,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
         harness: runtime.harness,
         events_tx,
         cwd,
+        files_root: PathBuf::from("/"),
     };
 
     // CORS origin defaults to the Vite dev server this bridge was built
@@ -322,7 +335,7 @@ async fn list_files(
     State(state): State<AppState>,
     Query(q): Query<FilesQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let dir = resolve_safe_path(&state.cwd, &q.path)?;
+    let dir = resolve_safe_path(&state.files_root, &q.path)?;
     let meta = std::fs::metadata(&dir).map_err(|_| api_error(StatusCode::NOT_FOUND, "not_found"))?;
     if !meta.is_dir() {
         return Err(api_error(StatusCode::BAD_REQUEST, "not_a_directory"));
@@ -365,7 +378,7 @@ async fn read_file_content(
     State(state): State<AppState>,
     Query(q): Query<FileContentQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let file_path = resolve_safe_path(&state.cwd, &q.path)?;
+    let file_path = resolve_safe_path(&state.files_root, &q.path)?;
     let meta = std::fs::metadata(&file_path).map_err(|_| api_error(StatusCode::NOT_FOUND, "not_found"))?;
     if meta.is_dir() {
         return Err(api_error(StatusCode::BAD_REQUEST, "is_a_directory"));

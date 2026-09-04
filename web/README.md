@@ -7,7 +7,7 @@ it's a renderer. Every real action (running a shell command, editing a
 file) happens server-side in `loop-server`/`AgentHarness`; see that crate's
 README for the architecture diagram.
 
-## Layout — phase 1 of 2, Files and Terminal now real
+## Layout — phase 1 of 2, Files and Terminal real (Git tab removed)
 
 The 3-column shell (sidebar / chat / tabbed side panel) in `main.ts` +
 `app.css` is modeled on [pi-web.dev](https://pi-web.dev) (a separate,
@@ -16,11 +16,12 @@ libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
 
 - Sidebar (Project/Model/Session) shows real data from `loop-server`'s
   `/health` endpoint and `.env` — not fabricated
-- **Files tab is real** — browses the actual project directory via
-  `loop-server`'s `GET /files` / `/files/content` (see that crate's
-  README for the API and the path-traversal protection backing it).
-  Click a folder to navigate in, a file to preview its content, "← .."
-  to go back up.
+- **Files tab is real** — browses the **whole filesystem**, not just the
+  project directory, via `loop-server`'s `GET /files` / `/files/content`
+  (see that crate's README — this scope was widened from
+  project-directory-only on explicit request/confirmation; read that
+  note before assuming it's still sandboxed). Click a folder to navigate
+  in, a file to preview its content, "← .." to go back up.
 - **Terminal tab is real** — `xterm.js` talking to `loop-server`'s
   `GET /terminal/ws`, which spawns an actual PTY-backed shell server-side
   (see that crate's README for the protocol and how it's verified). The
@@ -34,13 +35,10 @@ libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
   crash, easy to miss without actually looking closely. Fixed by
   deferring the whole `xterm.js`/WebSocket setup one `requestAnimationFrame`
   past the tab click, after the container is actually laid out.
-- Git tab is still an **honest placeholder** — says plainly that
-  `loop-server` has no git backend, rather than faking data that isn't real
 - The chat column is the actual, fully working bridge — same as before
 
-**Still not done:** git status/diff needs its own backend work in
-`loop-server`, comparable in scope to what Files and Terminal just took.
-Revisit if wanted.
+Git tab (was an honest placeholder) has been removed at the user's
+request rather than left as dead UI — no code references it anymore.
 
 ## RAG connection — placeholder
 

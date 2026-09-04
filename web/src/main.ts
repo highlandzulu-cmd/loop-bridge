@@ -159,16 +159,10 @@ async function main() {
 	// panel) around our real, working chat. Git/Terminal panels are honest
 	// placeholders — loop-server has no backend for those yet (see
 	// web/README.md "Phase 2"). Files is real now: GET /files and
-	// /files/content in loop-server, scoped to the project directory.
-	type PanelTab = "files" | "git" | "terminal" | "info";
+	// /files/content in loop-server, scoped to "/" (the whole filesystem,
+	// per explicit request/confirmation — see loop-server's README).
+	type PanelTab = "files" | "terminal" | "info";
 	let activeTab: PanelTab = "info";
-
-	const notWired = (label: string) => html`
-		<div class="pw-not-wired">
-			${label} isn't wired up yet — loop-server doesn't have a ${label.toLowerCase()} backend.<br />
-			The chat on the left is the real, working part.
-		</div>
-	`;
 
 	interface FileEntry {
 		name: string;
@@ -396,7 +390,7 @@ async function main() {
 
 				<aside class="pw-panel">
 					<div class="pw-tabs">
-						${(["files", "git", "terminal", "info"] as PanelTab[]).map(
+						${(["files", "terminal", "info"] as PanelTab[]).map(
 							(tab) => html`
 								<button
 									class="pw-tab ${activeTab === tab ? "active" : ""}"
@@ -413,7 +407,6 @@ async function main() {
 					</div>
 					<div class="pw-panel-body" style="${activeTab === "terminal" ? "padding:0" : ""}">
 						${activeTab === "files" ? renderFilesPanel() : ""}
-						${activeTab === "git" ? notWired("Git") : ""}
 						${activeTab === "info"
 							? html`
 									<div class="flex flex-col gap-3">
@@ -421,8 +414,7 @@ async function main() {
 										<div><strong>Session:</strong> ${sessionId}</div>
 										<div class="pw-not-wired" style="text-align:left">
 											This is a phase-1 visual shell recreating pi-web.dev's layout around our
-											real chat (see web/README.md). Git is still a placeholder — Files and
-											Terminal are real now.
+											real chat (see web/README.md). Files and Terminal are real.
 										</div>
 									</div>
 								`
