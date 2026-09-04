@@ -42,6 +42,24 @@ libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
 `loop-server`, comparable in scope to what Files and Terminal just took.
 Revisit if wanted.
 
+## RAG connection — placeholder
+
+A second, independent branch off this frontend, separate from the
+frontend-to-`loop-server`/harness branch everything else here is about:
+a direct frontend-to-RAG-service connection, meant to augment chat
+context (query RAG first, fold results into what gets sent to the model)
+rather than a general query panel.
+
+Currently a real, working **toggle** — Connect/Disconnect in the sidebar,
+a URL field, visible connected/not-connected state — but no real RAG
+endpoint exists yet, so it makes no network call and changes nothing
+about chat behavior. `augmentRagContext()` in `main.ts` is the stub;
+returns `null` (no augmentation) always. Wiring in a real service means:
+filling in the actual `fetch` call there (once we have the endpoint's
+URL, auth, and request/response shape), and calling it from
+`loop-stream.ts`'s `extractPromptText` before the text is sent, folding
+any returned context into the outgoing message.
+
 ## Running it
 
 From the repo root:
