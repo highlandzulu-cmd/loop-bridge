@@ -362,9 +362,6 @@ async function main() {
 					<div class="pw-section-label"><span>RAG</span></div>
 					<div class="pw-card ${ragConnected ? "active" : ""}">
 						<div class="pw-card-title">${ragConnected ? "Connected" : "Not connected"}</div>
-						<div class="pw-card-sub">
-							Placeholder — no query goes out yet (see web/README.md "RAG connection")
-						</div>
 						<input
 							type="text"
 							placeholder="RAG service URL"
