@@ -163,6 +163,19 @@ as provisional until that's clarified.
   hidden, off-screen textarea, a well-known hard case for synthetic input
   tools, unrelated to whether the feature itself works. Real typing in a
   real browser goes through none of that.
+- `POST /rag/query` `{"query": "..."}` → forwards directly to the
+  configured RAG service (`RAG_SERVICE_URL`/`RAG_SERVICE_API_KEY`) and
+  returns its JSON response as-is. No model/harness turn involved at all —
+  distinct from the `rag_query` *tool* below, which the model decides to
+  call mid-conversation. This is what the frontend's `/rag-query` slash
+  command hits (see `web/README.md`). Returns `503` if `RAG_SERVICE_URL`
+  is unset.
+- `POST /rag/ingest` `{"path": "...", "id": "optional"}` → reads a file
+  already on disk (same PDF/text extraction as the `read_document` tool)
+  and forwards its full text to the RAG service's own `/ingest`. What the
+  frontend's `/rag-add` slash command hits. `id` defaults to the file's
+  name if omitted. Returns `400` if the file doesn't exist, `503` if
+  `RAG_SERVICE_URL` is unset.
 
 ## Tools
 

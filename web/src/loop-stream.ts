@@ -165,6 +165,33 @@ export interface LoopStreamFnOptions {
 	baseUrl: string;
 }
 
+/**
+ * Builds a complete `AssistantMessage` — the type requires every field
+ * (usage, stopReason, timestamp, ...) even for a synthetic message that
+ * never touched a real model, so `/rag-query` and `/rag-add` below
+ * (which bypass the model/harness entirely) still need a fully-formed one
+ * to satisfy the `start`/`done`/`error` event shapes.
+ */
+function assistantMessage(model: Model<Api>, content: AssistantMessage["content"], stopReason: AssistantMessage["stopReason"], errorMessage?: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason,
+		errorMessage,
+		timestamp: Date.now(),
+	};
+}
+
+// Matches "/rag-query <question>" or "/rag-add <path>" as the entire typed
+// message (not just a prefix elsewhere in the text) — [\s\S]+ instead of .+
+// so a pasted multi-line question/path still matches.
+const RAG_QUERY_COMMAND = /^\/rag-query\s+([\s\S]+)$/;
+const RAG_ADD_COMMAND = /^\/rag-add\s+([\s\S]+)$/;
+
 /** Build a pi-agent-core StreamFn backed by a running loop-server instance. */
 export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 	return function loopStreamFn(model: Model<Api>, context: Context, _options?: SimpleStreamOptions) {
@@ -172,10 +199,61 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 
 		(async () => {
 			try {
+				const promptText = extractPromptText(context);
+
+				// /rag-query and /rag-add are a manual, deterministic shortcut to
+				// loop-server's direct /rag/query and /rag/ingest endpoints — no
+				// LLM turn involved at all, unlike the rag_query/read_document
+				// *tools* the model can already choose to call on its own mid-
+				// conversation. Handled here (rather than as real chat messages
+				// sent through /prompt) because this is the only seam available
+				// to intercept before pi-web-ui's ChatPanel hands the message to
+				// pi-agent-core — see this file's header for why.
+				const queryMatch = promptText.match(RAG_QUERY_COMMAND);
+				const addMatch = promptText.match(RAG_ADD_COMMAND);
+				if (queryMatch || addMatch) {
+					stream.push({ type: "start", partial: assistantMessage(model, [], "stop") });
+					try {
+						if (queryMatch) {
+							const res = await fetch(`${opts.baseUrl}/rag/query`, {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ query: queryMatch[1] }),
+							});
+							const body = await res.json();
+							if (!res.ok) {
+								throw new Error(body?.error ?? `RAG query failed (HTTP ${res.status})`);
+							}
+							const sources = Array.isArray(body.matches)
+								? body.matches.map((m: { score?: number }, i: number) => `[${i + 1}] score ${m.score?.toFixed(2) ?? "?"}`).join(", ")
+								: "";
+							const text = `${body.answer ?? JSON.stringify(body)}${sources ? `\n\nSources: ${sources}` : ""}`;
+							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+						} else if (addMatch) {
+							const path = addMatch[1].trim();
+							const res = await fetch(`${opts.baseUrl}/rag/ingest`, {
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: JSON.stringify({ path }),
+							});
+							const body = await res.json();
+							if (!res.ok) {
+								throw new Error(body?.error ?? `RAG ingest failed (HTTP ${res.status})`);
+							}
+							const text = `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`;
+							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+						}
+					} catch (err) {
+						const text = err instanceof Error ? err.message : String(err);
+						stream.push({ type: "error", reason: "error", error: assistantMessage(model, [], "error", text) });
+					}
+					return; // finally{} below closes the stream
+				}
+
 				const res = await fetch(`${opts.baseUrl}/prompt`, {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ text: extractPromptText(context) }),
+					body: JSON.stringify({ text: promptText }),
 				});
 				if (!res.ok || !res.body) {
 					throw new Error(`loop-server responded ${res.status} ${res.statusText}`);

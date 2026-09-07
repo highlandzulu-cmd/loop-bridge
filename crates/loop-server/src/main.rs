@@ -287,6 +287,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/prompt", post(prompt_handler))
         .route("/files", get(list_files))
         .route("/files/content", get(read_file_content))
+        .route("/rag/query", post(rag_query_handler))
+        .route("/rag/ingest", post(rag_ingest_handler))
         .route("/terminal/ws", get(terminal_ws))
         .with_state(state)
         .layer(cors);
@@ -430,6 +432,103 @@ async fn read_file_content(
             "message": "Binary file — not shown.",
         }))),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct RagQueryRequest {
+    query: String,
+}
+
+/// POST /rag/query { "query": "..." } -> direct, non-streamed RAG retrieval,
+/// bypassing the model entirely. Distinct from the `rag_query` *tool*
+/// (`build_rag_query_tool`, below) — that one the model decides to call
+/// mid-conversation; this endpoint is a manual "just ask the RAG service"
+/// path for the frontend's `/rag-query` slash command (see web/main.ts) or
+/// direct curl testing, with no LLM turn involved at all. Shares the same
+/// RAG_SERVICE_URL / RAG_SERVICE_API_KEY env vars and forwarding logic —
+/// factoring that into one shared function was considered, but the tool's
+/// closure has a different error type (`String`, for `AgentToolResult`)
+/// than this handler needs (`ApiError`), so it stays duplicated rather than
+/// forcing an awkward shared signature for ~15 lines of `reqwest` calls.
+async fn rag_query_handler(Json(req): Json<RagQueryRequest>) -> Result<Json<serde_json::Value>, ApiError> {
+    let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RAG_SERVICE_URL is not configured on this bridge",
+        ));
+    };
+
+    let client = reqwest::Client::new();
+    let mut request = client.post(format!("{rag_url}/query")).json(&serde_json::json!({ "query": req.query }));
+    if let Ok(api_key) = std::env::var("RAG_SERVICE_API_KEY") {
+        request = request.bearer_auth(api_key);
+    }
+    let res = request
+        .send()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service request failed: {e}")))?;
+
+    let status = res.status();
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service returned a non-JSON response: {e}")))?;
+    if !status.is_success() {
+        return Err((StatusCode::BAD_GATEWAY, Json(body)));
+    }
+    Ok(Json(body))
+}
+
+#[derive(serde::Deserialize)]
+struct RagIngestRequest {
+    path: String,
+    #[serde(default)]
+    id: Option<String>,
+}
+
+/// POST /rag/ingest { "path": "...", "id": "optional" } -> reads a file
+/// already on disk (same extraction as the `read_document` tool — PDF via
+/// pdf-extract, else plain text) and forwards its full text to the RAG
+/// service's own /ingest endpoint, for the frontend's `/rag-add` slash
+/// command. `id` defaults to the file's name if omitted. No truncation
+/// here (unlike `read_document`'s 100k-char cap for context-window safety)
+/// — the RAG service does its own chunking on the full text.
+async fn rag_ingest_handler(Json(req): Json<RagIngestRequest>) -> Result<Json<serde_json::Value>, ApiError> {
+    let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RAG_SERVICE_URL is not configured on this bridge",
+        ));
+    };
+
+    let path = PathBuf::from(&req.path);
+    let text = extract_document_text(&path)
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, &e))?;
+    let doc_id = req.id.unwrap_or_else(|| {
+        path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| req.path.clone())
+    });
+
+    let client = reqwest::Client::new();
+    let mut request =
+        client.post(format!("{rag_url}/ingest")).json(&serde_json::json!({ "text": text, "id": doc_id }));
+    if let Ok(api_key) = std::env::var("RAG_SERVICE_API_KEY") {
+        request = request.bearer_auth(api_key);
+    }
+    let res = request
+        .send()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service request failed: {e}")))?;
+
+    let status = res.status();
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service returned a non-JSON response: {e}")))?;
+    if !status.is_success() {
+        return Err((StatusCode::BAD_GATEWAY, Json(body)));
+    }
+    Ok(Json(body))
 }
 
 /// POST /prompt { "text": "..." } -> SSE stream of JSON events.
@@ -719,8 +818,41 @@ async fn handle_terminal_socket(mut socket: WebSocket, cwd: PathBuf) {
 /// extractor, or plain UTF-8 text files directly. DOCX/XLSX/PPTX aren't
 /// supported yet; returns a clear error for those rather than garbage.
 /// Path resolution is deliberately unrestricted (same as bash/read, which
-/// the model already has) — this tool's actual value-add is PDF parsing,
-/// not a new access boundary.
+/// the model already has) — not a new access boundary. Shared by both the
+/// `read_document` tool below and the `/rag/ingest` HTTP endpoint (see
+/// `rag_ingest_handler`) — factored out so PDF-vs-text handling exists in
+/// exactly one place rather than being copy-pasted between them.
+async fn extract_document_text(path: &Path) -> Result<String, String> {
+    if !path.exists() {
+        return Err(format!("file not found: {}", path.display()));
+    }
+
+    let is_pdf = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+
+    if is_pdf {
+        // pdf-extract is synchronous/blocking — real parsing work, not just
+        // I/O — so it runs on a blocking thread rather than tying up the
+        // async runtime.
+        let path_for_blocking = path.to_path_buf();
+        tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path_for_blocking))
+            .await
+            .map_err(|e| format!("pdf extraction task panicked: {e}"))?
+            .map_err(|e| format!("failed to extract PDF text from {}: {e}", path.display()))
+    } else {
+        std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "failed to read {} as text (not a .pdf, and not valid UTF-8 text — \
+                 DOCX/XLSX/PPTX aren't supported yet): {e}",
+                path.display()
+            )
+        })
+    }
+}
+
 fn build_read_document_tool() -> AgentTool {
     const MAX_DOC_CHARS: usize = 100_000;
 
@@ -747,34 +879,7 @@ fn build_read_document_tool() -> AgentTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "missing required 'path' argument".to_string())?;
             let path = std::path::PathBuf::from(path);
-            if !path.exists() {
-                return Err(format!("file not found: {}", path.display()));
-            }
-
-            let is_pdf = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("pdf"))
-                .unwrap_or(false);
-
-            let text = if is_pdf {
-                // pdf-extract is synchronous/blocking — real parsing work,
-                // not just I/O — so it runs on a blocking thread rather
-                // than tying up the async runtime.
-                let path_for_blocking = path.clone();
-                tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path_for_blocking))
-                    .await
-                    .map_err(|e| format!("pdf extraction task panicked: {e}"))?
-                    .map_err(|e| format!("failed to extract PDF text from {}: {e}", path.display()))?
-            } else {
-                std::fs::read_to_string(&path).map_err(|e| {
-                    format!(
-                        "failed to read {} as text (not a .pdf, and not valid UTF-8 text — \
-                         DOCX/XLSX/PPTX aren't supported yet): {e}",
-                        path.display()
-                    )
-                })?
-            };
+            let text = extract_document_text(&path).await?;
 
             let char_count = text.chars().count();
             let text = if char_count > MAX_DOC_CHARS {
