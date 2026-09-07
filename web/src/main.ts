@@ -307,35 +307,17 @@ async function main() {
 		});
 	};
 
-	// RAG connection — the second branch, frontend directly to a RAG service
-	// (separate from the frontend-to-loop-server/harness branch above, not
-	// proxied through it). Placeholder for now: no real RAG endpoint given
-	// yet, so "Connect" only stores the URL and flips local UI state — it
-	// does not attempt any network call (we don't know that service's
-	// actual health-check shape) and augmentRagContext() below is a stub
-	// that changes nothing about chat behavior yet. Both are structured so
-	// wiring in a real endpoint later is a small, contained change: fill in
-	// the fetch in augmentRagContext, call it from loop-stream.ts's
-	// extractPromptText before the text is sent.
-	let ragUrl = "";
-	let ragConnected = false;
-
-	/**
-	 * Stub for the second branch: frontend -> RAG service, independent of
-	 * the frontend -> loop-server/harness branch. Once wired to a real
-	 * endpoint, this is where a query would go out and real retrieved
-	 * context would come back, to be folded into the prompt before it's
-	 * sent to loop-server. Currently always returns null (no augmentation)
-	 * — intentionally not faking retrieved context.
-	 */
-	async function augmentRagContext(_userText: string): Promise<string | null> {
-		if (!ragConnected) return null;
-		// TODO: real call once a RAG endpoint/API shape is provided, e.g.:
-		//   const res = await fetch(`${ragUrl}/query`, { method: "POST", ... });
-		return null;
-	}
-	// Exposed for loop-stream.ts / future wiring without a circular import.
-	(window as unknown as { __ragAugment?: typeof augmentRagContext }).__ragAugment = augmentRagContext;
+	// RAG used to have a second, separate frontend-side branch planned here
+	// (a direct frontend -> RAG-service connection with its own Connect/
+	// Disconnect toggle, meant to augment the prompt before it's sent). That
+	// was never wired to anything real (augmentRagContext() always returned
+	// null) and is now superseded: RAG is a real backend tool instead — see
+	// crates/loop-server/README.md "Tools" and cloudflare-rag/README.md.
+	// The model calls it mid-conversation when it decides to; there's
+	// nothing for this frontend to connect or toggle. The dead
+	// ragUrl/ragConnected/augmentRagContext/__ragAugment code that used to
+	// live here (never called from anywhere, confirmed by grep) has been
+	// removed rather than left around implying a mechanism that isn't real.
 
 	const renderShell = () =>
 		html`
@@ -358,28 +340,6 @@ async function main() {
 					<div class="pw-card active">
 						<div class="pw-card-title">${sessionId.slice(0, 18)}${sessionId.length > 18 ? "…" : ""}</div>
 						<div class="pw-card-sub">persisted server-side by loop-server</div>
-					</div>
-					<div class="pw-section-label"><span>RAG</span></div>
-					<div class="pw-card ${ragConnected ? "active" : ""}">
-						<div class="pw-card-title">${ragConnected ? "Connected" : "Not connected"}</div>
-						<input
-							type="text"
-							placeholder="RAG service URL"
-							.value=${ragUrl}
-							?disabled=${ragConnected}
-							@input=${(e: Event) => (ragUrl = (e.target as HTMLInputElement).value)}
-							style="width:100%; margin-top:6px; padding:4px 6px; font-family:inherit; font-size:11px; background:var(--input); border:1px solid var(--border); border-radius:4px; color:var(--foreground)"
-						/>
-						<button
-							class="pw-tab"
-							style="width:100%; margin-top:6px; justify-content:center"
-							@click=${() => {
-								ragConnected = !ragConnected;
-								renderApp();
-							}}
-						>
-							${ragConnected ? "Disconnect" : "Connect"}
-						</button>
 					</div>
 				</aside>
 

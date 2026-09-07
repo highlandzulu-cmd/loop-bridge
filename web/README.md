@@ -40,33 +40,23 @@ libraries — see [jmfederico/pi-web](https://github.com/jmfederico/pi-web)).
 Git tab (was an honest placeholder) has been removed at the user's
 request rather than left as dead UI — no code references it anymore.
 
-## RAG connection — placeholder
+## RAG — no frontend UI, it's a backend tool
 
-A second, independent branch off this frontend, separate from the
-frontend-to-`loop-server`/harness branch everything else here is about:
-a direct frontend-to-RAG-service connection, meant to augment chat
-context (query RAG first, fold results into what gets sent to the model)
-rather than a general query panel.
+There used to be a second, separate sidebar card here: a Connect/Disconnect
+toggle for a planned direct frontend-to-RAG-service branch (query RAG in
+the browser, fold results into the prompt before sending). It was never
+wired to anything real (`augmentRagContext()` in `main.ts` always returned
+`null`) and has been removed — both the card and that dead code — rather
+than left implying a mechanism that isn't real.
 
-Currently a real, working **toggle** — Connect/Disconnect in the sidebar,
-a URL field, visible connected/not-connected state — but no real RAG
-endpoint exists yet, so it makes no network call and changes nothing
-about chat behavior. `augmentRagContext()` in `main.ts` is the stub;
-returns `null` (no augmentation) always. Wiring in a real service means:
-filling in the actual `fetch` call there (once we have the endpoint's
-URL, auth, and request/response shape), and calling it from
-`loop-stream.ts`'s `extractPromptText` before the text is sent, folding
-any returned context into the outgoing message.
-
-**Not the same thing as** the backend's `rag_query` tool (see
-`crates/loop-server/README.md` "Tools") — that's a real, working tool the
-*model* can choose to call mid-conversation, configured server-side via the
-`RAG_SERVICE_URL` env var, completely independent of this sidebar toggle's
-browser-only state. The two aren't connected to each other at all right
-now: this card doesn't enable/configure that tool, and that tool doesn't
-report its status back to this card. Two separate, unfinished halves of
-"RAG," not one feature split across two files — worth deciding whether to
-unify them once a real RAG service exists.
+RAG is real now, but entirely on the backend: `rag_query` (see
+`crates/loop-server/README.md` "Tools") is a tool the *model* can choose to
+call mid-conversation, configured server-side via `RAG_SERVICE_URL` /
+`RAG_SERVICE_API_KEY` in `.env`, currently pointed at a live Cloudflare
+Worker (`cloudflare-rag/`). There's nothing to connect or toggle from this
+frontend — the model just calls it when it decides to, same as any other
+tool. Verified end-to-end through this actual chat UI, not just the API
+directly.
 
 ## Running it
 
