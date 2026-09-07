@@ -240,7 +240,14 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 							if (!res.ok) {
 								throw new Error(body?.error ?? `RAG ingest failed (HTTP ${res.status})`);
 							}
-							const text = `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`;
+							// doc_id/chunks_stored are cloudflare-rag's own response fields, not
+							// a fixed spec (see crates/loop-server/README.md "RAG interface
+							// contract") — a different RAG service's /ingest may omit them, so
+							// this falls back to the raw response rather than printing "undefined".
+							const text =
+								typeof body.doc_id === "string" && typeof body.chunks_stored === "number"
+									? `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`
+									: `Ingested \`${path}\`. Response: ${JSON.stringify(body)}`;
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
 						}
 					} catch (err) {

@@ -211,27 +211,42 @@ behavior:
   unset by default, in which case the tool tells the model plainly that no
   RAG service is configured rather than fabricating retrieved content —
   verified live, the model relayed that message honestly rather than
-  inventing an answer. When set, it does a real `reqwest`
-  `POST {RAG_SERVICE_URL}/query` with `{"query": "..."}` (plus
-  `Authorization: Bearer {RAG_SERVICE_API_KEY}` if that var is set) and
-  returns the JSON response body as-is.
-  **Currently wired up to a real deployment**, not just a placeholder: see
-  `cloudflare-rag/` — a small Cloudflare Worker (Workers AI for
-  embeddings/generation, Vectorize for storage) built specifically as a
-  test stub with zero local/server compute, after an earlier local-Docker
-  version of this same stub (Postgres + MinIO + R2R + Ollama) crashed the
-  laptop it ran on. Verified end-to-end through a real chat prompt — model
-  called `rag_query`, hit the real Worker, got a real answer back from an
-  ingested test document. The request/response shape above matches that
-  Worker specifically; pointed at a different RAG service, it's a
-  placeholder convention, not a fixed spec — adjust `build_rag_query_tool()`
-  in `src/main.rs` to match whatever real service you point this at.
-  **This is unrelated to the frontend's RAG sidebar card** (`web/` — a URL
-  input and Connect/Disconnect toggle): that's currently just browser-side
-  UI state with no wiring to this tool or to `RAG_SERVICE_URL` at all. See
-  `web/README.md`'s "RAG connection" section. Unifying them (e.g. having
-  the frontend's Connect action configure this same backend tool) is open
-  work, not done.
+  inventing an answer. **Currently wired up to a real deployment**, not
+  just a placeholder: see `cloudflare-rag/` — a small Cloudflare Worker
+  (Workers AI for embeddings/generation, Vectorize for storage) built
+  specifically as a test stub with zero local/server compute, after an
+  earlier local-Docker version of this same stub (Postgres + MinIO + R2R +
+  Ollama) crashed the laptop it ran on. The frontend also has two direct,
+  non-LLM slash commands against the same service — `/rag-query` and
+  `/rag-add` — see `web/README.md`.
+
+### Swapping in a different RAG service
+
+Everything above — the `rag_query` tool, `/rag/query`, `/rag/ingest` — talks
+to whatever `RAG_SERVICE_URL` points at through one fixed, small interface.
+None of this Rust or frontend code hardcodes anything about Cloudflare
+specifically; `cloudflare-rag/` just happens to be the one implementation
+that exists today. **Swapping to a real RAG system means pointing
+`RAG_SERVICE_URL` at something else that implements this same interface —
+zero code changes here, unless that service's actual API differs, in which
+case put a small translating adapter in front of it rather than editing
+this code.**
+
+The interface, in full:
+
+| | Request | Success response |
+|---|---|---|
+| `POST {RAG_SERVICE_URL}/query` | `{"query": "..."}` | any JSON — shown to the model/user as-is. `{"answer": "...", "matches": [{"score": ..., "text": ...}]}` renders nicest (see `loop-stream.ts`'s `/rag-query` handling), but any shape works — worst case it's relayed as raw JSON instead of formatted text. |
+| `POST {RAG_SERVICE_URL}/ingest` | `{"text": "...", "id": "..."}` | any JSON. `{"doc_id": "...", "chunks_stored": N}` renders nicest; anything else falls back to showing the raw response. |
+| Auth | `Authorization: Bearer {RAG_SERVICE_API_KEY}` sent on every request *if* that env var is set. Omit the var if the target service doesn't need auth. |
+
+Both this crate (`build_rag_query_tool`, `rag_query_handler`,
+`rag_ingest_handler` in `src/main.rs`) and the frontend (`loop-stream.ts`)
+already relay whatever JSON comes back rather than requiring specific
+fields — verified by reading each call site, not assumed. The only genuinely
+rigid part is the *request* shape (`{"query"}` / `{"text","id"}`) — a real
+RAG service that expects a different request shape needs a thin adapter
+in between, not changes here.
 
 ## Known limitations / open work
 

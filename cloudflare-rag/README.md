@@ -21,6 +21,14 @@ answer back from an ingested test document, and relayed it correctly. Only
 that one test document is in the index right now; ingest whatever you
 actually want the model to retrieve from via `POST /ingest` (see below).
 
+**This is one interchangeable implementation, not a hardcoded dependency.**
+`loop-server` only knows about a small fixed interface (`POST /query`,
+`POST /ingest` — exact shape in `crates/loop-server/README.md` "Swapping in
+a different RAG service"), which this Worker happens to implement. Point
+`RAG_SERVICE_URL` at a real RAG system instead and this whole directory can
+be deleted — zero changes needed elsewhere, as long as the real system
+speaks that same interface (or sits behind a thin adapter that does).
+
 ## What it actually is
 
 - **Embeddings**: `@cf/baai/bge-base-en-v1.5` (768-dim), via the Workers AI
