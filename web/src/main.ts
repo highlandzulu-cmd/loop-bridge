@@ -8,6 +8,7 @@ import {
 	CustomProvidersStore,
 	defaultConvertToLlm,
 	IndexedDBStorageBackend,
+	type MessageEditor,
 	ProviderKeysStore,
 	SessionsStore,
 	SettingsStore,
@@ -106,6 +107,19 @@ async function main() {
 	if (chatPanel.agentInterface) {
 		chatPanel.agentInterface.enableModelSelector = false;
 	}
+
+	// Slash-command autocomplete (/rag-query, /rag-add — see loop-stream.ts)
+	// so typing "/" surfaces clickable options, matching how Claude's own
+	// input works. pi-web-ui has no built-in slash-command support and
+	// MessageEditor's `onInput` prop isn't wired up by AgentInterface (dead
+	// end, confirmed by reading its render()), so the only real hook is
+	// reaching directly into the shadow DOM for the actual <textarea> —
+	// invasive, but it's an open shadow root (Lit's default) and MessageEditor
+	// exposes a plain `value` property with a normal reactive setter (no
+	// hidden side effects, confirmed by reading it) that's safe to set from
+	// outside. Deferred one frame past setAgent() resolving so agent-interface
+	// and message-editor have actually rendered their shadow DOM.
+	requestAnimationFrame(() => setupSlashCommands(chatPanel));
 
 	// Verified live, root-caused: pi-agent-core's Agent mutates state.messages
 	// in place (same array reference across turns) instead of replacing it.
@@ -386,6 +400,178 @@ async function main() {
 
 	const renderApp = () => render(renderShell(), app!);
 	renderApp();
+}
+
+interface SlashCommand {
+	name: string; // includes the leading "/"
+	hint: string;
+	description: string;
+}
+
+// The two commands loop-stream.ts's createLoopStreamFn actually handles.
+// Keep this list and that file's RAG_QUERY_COMMAND/RAG_ADD_COMMAND regexes
+// in sync manually — there's no shared source of truth between the two
+// files today (this one drives the menu, that one drives execution).
+const SLASH_COMMANDS: SlashCommand[] = [
+	{ name: "/rag-query", hint: "<question>", description: "Query the RAG service directly — no LLM turn" },
+	{ name: "/rag-add", hint: "<path>", description: "Ingest a file on disk into the RAG service" },
+];
+
+/**
+ * Wires up a slash-command autocomplete menu on the real chat textarea, the
+ * way Claude's own input works: type "/" and see clickable options.
+ *
+ * pi-web-ui has no built-in support for this, and MessageEditor's `onInput`
+ * prop is never passed through by AgentInterface's render() (confirmed by
+ * reading it — a dead end), so this reaches directly into the DOM for the
+ * actual <textarea> instead. Verified live: AgentInterface/MessageEditor
+ * override Lit's `createRenderRoot()` to render into **light DOM** (`this`),
+ * not a shadow root — needed so their Tailwind utility classes pick up the
+ * page's global stylesheet — so plain `querySelector` reaches straight
+ * through with no shadow-piercing needed at all (confirmed live:
+ * `.shadowRoot` on both is `null`). MessageEditor's `value` is a plain
+ * reactive property with no side effects beyond `requestUpdate` (confirmed
+ * by reading its getter/setter) — safe to set from outside to fill in a
+ * chosen command.
+ *
+ * The dropdown itself is a plain DOM element appended to `document.body`,
+ * deliberately outside lit-html's renderShell() tree — it only needs to
+ * exist while actively showing suggestions, and keeping it fully imperative
+ * avoids fighting renderShell()'s own re-render cycle for something this
+ * self-contained.
+ */
+function setupSlashCommands(chatPanel: ChatPanel) {
+	const agentInterface = chatPanel.agentInterface;
+	if (!agentInterface) return;
+	const messageEditor = agentInterface.querySelector("message-editor") as MessageEditor | null;
+	if (!messageEditor) return;
+	const textarea = messageEditor.querySelector("textarea");
+	if (!textarea) return;
+
+	const menu = document.createElement("div");
+	menu.className = "pw-slash-menu";
+	menu.style.cssText =
+		"position:fixed; display:none; z-index:1000; background:var(--card); border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,0.2); font-family:inherit;";
+	document.body.appendChild(menu);
+
+	let filtered: SlashCommand[] = [];
+	let highlighted = 0;
+
+	const hide = () => {
+		menu.style.display = "none";
+		filtered = [];
+	};
+
+	const select = (cmd: SlashCommand) => {
+		messageEditor.value = `${cmd.name} `;
+		hide();
+		// messageEditor.value's setter triggers a Lit re-render (async), so
+		// the real textarea's value/caret aren't updated yet on this tick.
+		requestAnimationFrame(() => {
+			textarea.focus();
+			const len = textarea.value.length;
+			textarea.setSelectionRange(len, len);
+		});
+	};
+
+	const renderMenu = () => {
+		menu.innerHTML = "";
+		filtered.forEach((cmd, i) => {
+			const item = document.createElement("div");
+			item.style.cssText = `padding:8px 12px; cursor:pointer; font-size:12px; ${i === highlighted ? "background:var(--accent);" : ""}`;
+			// Built with textContent, not innerHTML — cmd.hint contains literal
+			// "<" / ">" (e.g. "<question>"), which innerHTML would parse as an
+			// (unknown, invisible) HTML tag rather than display as text. Hit
+			// live: the hints silently vanished on first try.
+			const nameLine = document.createElement("div");
+			nameLine.style.fontWeight = "600";
+			nameLine.append(`${cmd.name} `);
+			const hint = document.createElement("span");
+			hint.style.cssText = "opacity:0.6; font-weight:400";
+			hint.textContent = cmd.hint;
+			nameLine.append(hint);
+			const descLine = document.createElement("div");
+			descLine.style.cssText = "opacity:0.65; font-size:11px; margin-top:2px";
+			descLine.textContent = cmd.description;
+			item.append(nameLine, descLine);
+			// mousedown, not click: fires before the textarea would blur, so
+			// select() can still refocus it afterward without a visible flicker.
+			item.addEventListener("mousedown", (e) => {
+				e.preventDefault();
+				select(cmd);
+			});
+			item.addEventListener("mouseenter", () => {
+				highlighted = i;
+				renderMenu();
+			});
+			menu.appendChild(item);
+		});
+	};
+
+	const updatePosition = () => {
+		const rect = textarea.getBoundingClientRect();
+		menu.style.left = `${rect.left}px`;
+		menu.style.width = `${rect.width}px`;
+		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
+	};
+
+	const handleInput = () => {
+		// Only while the whole input is still just "/" + a partial command
+		// name — once a space is typed (the command's argument starting),
+		// the menu should get out of the way.
+		const match = textarea.value.match(/^\/(\S*)$/);
+		if (!match) {
+			hide();
+			return;
+		}
+		const typed = match[1].toLowerCase();
+		filtered = SLASH_COMMANDS.filter((c) => c.name.slice(1).toLowerCase().startsWith(typed));
+		if (filtered.length === 0) {
+			hide();
+			return;
+		}
+		highlighted = 0;
+		updatePosition();
+		menu.style.display = "block";
+		renderMenu();
+	};
+
+	textarea.addEventListener("input", handleInput);
+	// Capture phase so this runs before MessageEditor's own keydown handler
+	// (which sends the message on plain Enter) — stopImmediatePropagation
+	// keeps that handler from also firing when a suggestion is being picked.
+	textarea.addEventListener(
+		"keydown",
+		(e) => {
+			if (menu.style.display === "none") return;
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				highlighted = (highlighted + 1) % filtered.length;
+				renderMenu();
+			} else if (e.key === "ArrowUp") {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				highlighted = (highlighted - 1 + filtered.length) % filtered.length;
+				renderMenu();
+			} else if (e.key === "Enter" || e.key === "Tab") {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				select(filtered[highlighted]);
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				e.stopImmediatePropagation();
+				hide();
+			}
+		},
+		true,
+	);
+	window.addEventListener("resize", () => {
+		if (filtered.length > 0) updatePosition();
+	});
+	document.addEventListener("mousedown", (e) => {
+		if (filtered.length > 0 && e.target !== textarea && !menu.contains(e.target as Node)) hide();
+	});
 }
 
 main();

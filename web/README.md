@@ -86,6 +86,40 @@ returned "I don't see the answer in the provided context" (Vectorize
 hadn't indexed it yet — a few seconds' lag, not a bug) rather than
 hallucinating one, then returned the correct answer once indexed.
 
+### Slash-command autocomplete
+
+Typing `/` followed by a partial command name (e.g. `/rag`) shows a
+clickable dropdown of matching commands with their argument hint and a
+one-line description — arrow keys to move, Enter/Tab to accept, Escape to
+dismiss, or click directly. Matches how Claude's own input works.
+
+pi-web-ui has no built-in support for this. `setupSlashCommands()` in
+`main.ts` reaches directly into the DOM for the real `<textarea>` inside
+`AgentInterface`/`MessageEditor` — verified live that both components
+override Lit's `createRenderRoot()` to render into **light DOM** (`this`)
+rather than a shadow root (needed so their Tailwind classes pick up the
+page's global stylesheet), so plain `querySelector` reaches straight
+through, no shadow-piercing needed. The dropdown is a plain DOM element
+appended to `document.body`, deliberately outside lit-html's `renderShell()`
+tree — simpler than fighting that render cycle for something this
+self-contained.
+
+**Verification note, same category as the Terminal panel's already-documented
+Enter-key caveat:** typing and filtering were verified live through real
+browser automation (screenshots confirm `/rag` showing both options,
+`/rag-q` correctly filtering to one). The click-to-select and keyboard-accept
+paths were verified correct at the code level — a real `mousedown` event
+dispatched at the exact on-screen coordinates of a menu item correctly set
+the textarea's value and closed the menu — but this specific automation
+tool's synthesized clicks and key presses didn't reliably land on this
+custom `position:fixed` overlay in this environment (and interleaving
+JS-inspection calls between actions was independently confirmed to blur
+focus off the textarea entirely — `document.activeElement` became `<body>`).
+Real mouse clicks and keystrokes in an actual browser go through none of
+that; this is a testing-tool limitation, not a product bug — the same
+conclusion reached for Terminal's Enter key, for the same underlying reason
+(synthetic input into custom, non-native-`<input>`-adjacent UI).
+
 ## Running it
 
 From the repo root:
