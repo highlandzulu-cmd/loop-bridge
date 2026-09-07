@@ -194,14 +194,24 @@ behavior:
   auth, unsandboxed" above for what that access level already means.
 - **`rag_query`** — queries a configurable external RAG (retrieval-augmented
   generation) service for context relevant to a question. Controlled by the
-  `RAG_SERVICE_URL` env var (see `.env.example`): unset by default, in which
-  case the tool tells the model plainly that no RAG service is configured
-  rather than fabricating retrieved content — verified live, the model
-  relayed that message honestly to the user rather than inventing an
-  answer. When set, it does a real `reqwest` `POST {RAG_SERVICE_URL}/query`
-  with `{"query": "..."}` and returns the JSON response body as-is. That
-  request/response shape is a placeholder convention (no real RAG service's
-  API has been specified yet) — expect to adjust `build_rag_query_tool()`
+  `RAG_SERVICE_URL` / `RAG_SERVICE_API_KEY` env vars (see `.env.example`):
+  unset by default, in which case the tool tells the model plainly that no
+  RAG service is configured rather than fabricating retrieved content —
+  verified live, the model relayed that message honestly rather than
+  inventing an answer. When set, it does a real `reqwest`
+  `POST {RAG_SERVICE_URL}/query` with `{"query": "..."}` (plus
+  `Authorization: Bearer {RAG_SERVICE_API_KEY}` if that var is set) and
+  returns the JSON response body as-is.
+  **Currently wired up to a real deployment**, not just a placeholder: see
+  `cloudflare-rag/` — a small Cloudflare Worker (Workers AI for
+  embeddings/generation, Vectorize for storage) built specifically as a
+  test stub with zero local/server compute, after an earlier local-Docker
+  version of this same stub (Postgres + MinIO + R2R + Ollama) crashed the
+  laptop it ran on. Verified end-to-end through a real chat prompt — model
+  called `rag_query`, hit the real Worker, got a real answer back from an
+  ingested test document. The request/response shape above matches that
+  Worker specifically; pointed at a different RAG service, it's a
+  placeholder convention, not a fixed spec — adjust `build_rag_query_tool()`
   in `src/main.rs` to match whatever real service you point this at.
   **This is unrelated to the frontend's RAG sidebar card** (`web/` — a URL
   input and Connect/Disconnect toggle): that's currently just browser-side

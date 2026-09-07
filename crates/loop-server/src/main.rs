@@ -795,12 +795,23 @@ fn build_read_document_tool() -> AgentTool {
 
 /// Queries a configurable RAG (retrieval-augmented generation) service —
 /// a real, callable tool the model can choose to invoke, not automatic
-/// context injection. Configured via RAG_SERVICE_URL; when unset (true
-/// today, since no real RAG endpoint has been provided yet) this honestly
-/// reports that rather than fabricating retrieved content. The exact
-/// request/response shape below (`POST {url}/query`, `{"query": "..."}`)
-/// is a placeholder convention — adjust once a real service's actual API
-/// is known.
+/// context injection. Configured via RAG_SERVICE_URL; when unset this
+/// honestly reports that rather than fabricating retrieved content.
+///
+/// Wired up against a real deployment as of this comment: `cloudflare-rag/`
+/// (see its README) — a small Cloudflare Worker using Workers AI for
+/// embeddings/generation and Vectorize as the vector store, so retrieval
+/// compute runs on Cloudflare's edge, not wherever this bridge is hosted.
+/// It's a test stub standing in until a real RAG system exists, chosen
+/// specifically because it needs zero local/server compute — an earlier
+/// version of this stub ran locally via Docker and crashed the machine it
+/// was on. The request/response shape below (`POST {url}/query`,
+/// `{"query": "..."}` → `{"answer", "matches"}`) matches that Worker;
+/// adjust if pointed at a different RAG service with a different API.
+/// RAG_SERVICE_API_KEY is sent as `Authorization: Bearer <key>` — required
+/// by the Cloudflare Worker (a public URL on a free account, otherwise
+/// open to anyone who finds it); optional here since a different RAG
+/// service might not need it.
 fn build_rag_query_tool() -> AgentTool {
     AgentTool::simple(
         "rag_query",
@@ -838,9 +849,13 @@ fn build_rag_query_tool() -> AgentTool {
             };
 
             let client = reqwest::Client::new();
-            let res = client
+            let mut req = client
                 .post(format!("{rag_url}/query"))
-                .json(&serde_json::json!({ "query": query }))
+                .json(&serde_json::json!({ "query": query }));
+            if let Ok(api_key) = std::env::var("RAG_SERVICE_API_KEY") {
+                req = req.bearer_auth(api_key);
+            }
+            let res = req
                 .send()
                 .await
                 .map_err(|e| format!("RAG service request to {rag_url} failed: {e}"))?;

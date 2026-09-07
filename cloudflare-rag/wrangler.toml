@@ -1,0 +1,17 @@
+name = "loop-rag-worker"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Workers AI binding — runs the embedding and completion models on
+# Cloudflare's own compute, not this laptop. Free tier: a daily allotment of
+# "neurons" (Cloudflare's compute-time unit), no card required to start.
+[ai]
+binding = "AI"
+
+# Vectorize binding — Cloudflare's managed vector database. Free tier
+# includes a generous per-account quota of stored vectors and queries.
+# The index itself is created separately via `wrangler vectorize create`
+# (see README.md in this directory) before the first deploy.
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "loop-rag-index"
