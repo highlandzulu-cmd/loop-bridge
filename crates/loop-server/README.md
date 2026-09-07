@@ -164,6 +164,52 @@ as provisional until that's clarified.
   tools, unrelated to whether the feature itself works. Real typing in a
   real browser goes through none of that.
 
+## Tools
+
+Besides Loop's standard 4 tools (`read`/`write`/`edit`/`bash`, built by
+`loop_cli::runtime::build_tools` and unchanged here), this bridge registers
+two more via `AgentHarness::set_tools()` at startup (see `main()` in
+`src/main.rs` — the log line `registered 6 tools (4 standard +
+read_document + rag_query)` confirms all six loaded). Both are real,
+verified-working tools the model can choose to call, not scripted/canned
+behavior:
+
+- **`read_document`** — reads a file already on disk (a real path, not the
+  chat's separate paperclip-upload attachment, which goes through the model
+  differently and was already working before this) and returns its text so
+  the model can summarize it or answer questions about it. Plain text files
+  (`.txt`, `.md`, code, etc.) are read directly; `.pdf` files go through
+  real extraction via the `pdf-extract` crate (run on a blocking thread —
+  it's synchronous, CPU-bound work, not I/O). DOCX/XLSX/PPTX aren't
+  supported yet and return a clear error rather than garbled bytes. Output
+  over 100,000 characters is truncated with a note, to avoid blowing the
+  model's context on one huge file. Verified live: a hand-built minimal PDF
+  and a plain `.txt` file, both actually read via the running harness with
+  a real hosted model, correctly answering questions about content that
+  only exists inside the file (see git history for the exact prompts/output
+  used to confirm this — not just "it compiled").
+  Path resolution here is deliberately the same unrestricted access the
+  model's own `bash`/`read` tools already have — this tool's actual
+  value-add is the PDF text extraction, not a new access boundary; see "no
+  auth, unsandboxed" above for what that access level already means.
+- **`rag_query`** — queries a configurable external RAG (retrieval-augmented
+  generation) service for context relevant to a question. Controlled by the
+  `RAG_SERVICE_URL` env var (see `.env.example`): unset by default, in which
+  case the tool tells the model plainly that no RAG service is configured
+  rather than fabricating retrieved content — verified live, the model
+  relayed that message honestly to the user rather than inventing an
+  answer. When set, it does a real `reqwest` `POST {RAG_SERVICE_URL}/query`
+  with `{"query": "..."}` and returns the JSON response body as-is. That
+  request/response shape is a placeholder convention (no real RAG service's
+  API has been specified yet) — expect to adjust `build_rag_query_tool()`
+  in `src/main.rs` to match whatever real service you point this at.
+  **This is unrelated to the frontend's RAG sidebar card** (`web/` — a URL
+  input and Connect/Disconnect toggle): that's currently just browser-side
+  UI state with no wiring to this tool or to `RAG_SERVICE_URL` at all. See
+  `web/README.md`'s "RAG connection" section. Unifying them (e.g. having
+  the frontend's Connect action configure this same backend tool) is open
+  work, not done.
+
 ## Known limitations / open work
 
 - Only one turn runs at a time, process-wide (by design — see the 409

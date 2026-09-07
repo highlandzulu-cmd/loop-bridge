@@ -58,6 +58,16 @@ URL, auth, and request/response shape), and calling it from
 `loop-stream.ts`'s `extractPromptText` before the text is sent, folding
 any returned context into the outgoing message.
 
+**Not the same thing as** the backend's `rag_query` tool (see
+`crates/loop-server/README.md` "Tools") — that's a real, working tool the
+*model* can choose to call mid-conversation, configured server-side via the
+`RAG_SERVICE_URL` env var, completely independent of this sidebar toggle's
+browser-only state. The two aren't connected to each other at all right
+now: this card doesn't enable/configure that tool, and that tool doesn't
+report its status back to this card. Two separate, unfinished halves of
+"RAG," not one feature split across two files — worth deciding whether to
+unify them once a real RAG service exists.
+
 ## Running it
 
 From the repo root:

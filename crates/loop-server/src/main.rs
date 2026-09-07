@@ -21,8 +21,8 @@ use futures::stream::Stream;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::broadcast;
 
-use loop_agent::harness::{AgentHarness, AgentHarnessPhase};
-use loop_agent::AgentEvent;
+use loop_agent::harness::{AgentHarness, AgentHarnessPhase, HostExecutionEnv};
+use loop_agent::{AgentEvent, AgentTool, AgentToolResult};
 use loop_ai::providers::{faux_provider, FauxResponse, FauxScript};
 use loop_cli::runtime::{bootstrap, BootstrapOpts};
 use tower_http::cors::{Any, CorsLayer};
@@ -212,6 +212,29 @@ async fn main() -> anyhow::Result<()> {
             .expect("faux provider registers faux-model");
         runtime.harness.set_model(faux_model).await;
         tracing::warn!("LOOP_SERVER_FAUX=1 — responses are scripted, not real inference");
+    }
+
+    // Register our two extra tools alongside the standard 4 (read/write/edit/
+    // bash). set_tools() *replaces* the whole list, so the base 4 have to be
+    // rebuilt here rather than fetched from the harness — there's no public
+    // getter for its current tool list, but build_tools() (the same function
+    // bootstrap() itself calls) is public, so this reconstructs the identical
+    // set rather than duplicating its logic.
+    {
+        let host_env: Arc<dyn loop_agent::harness::ExecutionEnv> = Arc::new(HostExecutionEnv::new(cwd.clone()));
+        let mut tools = loop_cli::runtime::build_tools(host_env);
+        let tool_count_before = tools.len();
+        tools.push(build_read_document_tool());
+        tools.push(build_rag_query_tool());
+        let tool_count = tools.len();
+        runtime
+            .harness
+            .set_tools(tools)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to register tools: {e}"))?;
+        tracing::info!(
+            "registered {tool_count} tools ({tool_count_before} standard + read_document + rag_query)"
+        );
     }
 
     tracing::info!(
@@ -690,4 +713,148 @@ async fn handle_terminal_socket(mut socket: WebSocket, cwd: PathBuf) {
     }
 
     let _ = child.kill();
+}
+
+/// Reads and extracts text from a document on disk — PDF via a real text
+/// extractor, or plain UTF-8 text files directly. DOCX/XLSX/PPTX aren't
+/// supported yet; returns a clear error for those rather than garbage.
+/// Path resolution is deliberately unrestricted (same as bash/read, which
+/// the model already has) — this tool's actual value-add is PDF parsing,
+/// not a new access boundary.
+fn build_read_document_tool() -> AgentTool {
+    const MAX_DOC_CHARS: usize = 100_000;
+
+    AgentTool::simple(
+        "read_document",
+        "Read Document",
+        "Read and extract text from a document file on disk so it can be summarized \
+         or used to answer questions. Supports PDF (real text extraction, not raw \
+         bytes) and plain text files (.txt, .md, code, etc). Not yet supported: \
+         DOCX, XLSX, PPTX — returns a clear error for those.",
+        serde_json::json!({
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path, or path relative to the current working directory, to the document to read."
+                }
+            }
+        }),
+        |_id, args, _cancel, _on_update| async move {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing required 'path' argument".to_string())?;
+            let path = std::path::PathBuf::from(path);
+            if !path.exists() {
+                return Err(format!("file not found: {}", path.display()));
+            }
+
+            let is_pdf = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("pdf"))
+                .unwrap_or(false);
+
+            let text = if is_pdf {
+                // pdf-extract is synchronous/blocking — real parsing work,
+                // not just I/O — so it runs on a blocking thread rather
+                // than tying up the async runtime.
+                let path_for_blocking = path.clone();
+                tokio::task::spawn_blocking(move || pdf_extract::extract_text(&path_for_blocking))
+                    .await
+                    .map_err(|e| format!("pdf extraction task panicked: {e}"))?
+                    .map_err(|e| format!("failed to extract PDF text from {}: {e}", path.display()))?
+            } else {
+                std::fs::read_to_string(&path).map_err(|e| {
+                    format!(
+                        "failed to read {} as text (not a .pdf, and not valid UTF-8 text — \
+                         DOCX/XLSX/PPTX aren't supported yet): {e}",
+                        path.display()
+                    )
+                })?
+            };
+
+            let char_count = text.chars().count();
+            let text = if char_count > MAX_DOC_CHARS {
+                let mut truncated: String = text.chars().take(MAX_DOC_CHARS).collect();
+                truncated.push_str(&format!(
+                    "\n\n[...truncated: document is {char_count} characters, \
+                     exceeds the {MAX_DOC_CHARS}-character preview limit...]"
+                ));
+                truncated
+            } else {
+                text
+            };
+
+            Ok(AgentToolResult::text(text))
+        },
+    )
+}
+
+/// Queries a configurable RAG (retrieval-augmented generation) service —
+/// a real, callable tool the model can choose to invoke, not automatic
+/// context injection. Configured via RAG_SERVICE_URL; when unset (true
+/// today, since no real RAG endpoint has been provided yet) this honestly
+/// reports that rather than fabricating retrieved content. The exact
+/// request/response shape below (`POST {url}/query`, `{"query": "..."}`)
+/// is a placeholder convention — adjust once a real service's actual API
+/// is known.
+fn build_rag_query_tool() -> AgentTool {
+    AgentTool::simple(
+        "rag_query",
+        "RAG Query",
+        "Query the configured RAG (retrieval-augmented generation) service for \
+         context relevant to a question — e.g. from an internal knowledge base or \
+         document store. Only performs a real retrieval when a RAG service has been \
+         configured server-side; otherwise says so plainly instead of making \
+         anything up.",
+        serde_json::json!({
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The question or search query to retrieve relevant context for."
+                }
+            }
+        }),
+        |_id, args, _cancel, _on_update| async move {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "missing required 'query' argument".to_string())?
+                .to_string();
+
+            let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
+                return Ok(AgentToolResult::text(
+                    "RAG service is not configured on this bridge (RAG_SERVICE_URL is \
+                     unset) — no real retrieval was performed, this is not fabricated \
+                     context. Set RAG_SERVICE_URL to a real endpoint to enable this \
+                     tool for real."
+                        .to_string(),
+                ));
+            };
+
+            let client = reqwest::Client::new();
+            let res = client
+                .post(format!("{rag_url}/query"))
+                .json(&serde_json::json!({ "query": query }))
+                .send()
+                .await
+                .map_err(|e| format!("RAG service request to {rag_url} failed: {e}"))?;
+
+            if !res.status().is_success() {
+                return Err(format!("RAG service returned HTTP {}", res.status()));
+            }
+
+            let body: serde_json::Value = res
+                .json()
+                .await
+                .map_err(|e| format!("RAG service returned a non-JSON or unexpected response: {e}"))?;
+
+            Ok(AgentToolResult::text(body.to_string()))
+        },
+    )
 }
