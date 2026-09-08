@@ -15,3 +15,15 @@ binding = "AI"
 [[vectorize]]
 binding = "VECTORIZE"
 index_name = "loop-rag-index"
+
+# KV binding — a small document manifest (doc_id -> full text + metadata),
+# separate from Vectorize. Exists because Vectorize has no "list all
+# documents" or "fetch by exact ID" API of its own — it's pure vector
+# similarity search, and a metadata-filtered query still needs a query
+# vector and is capped by topK, so it can't reliably return *all* chunks
+# for one document. Storing the original full text here instead makes
+# GET /documents and GET /documents/:id exact and independent of Vectorize
+# entirely — see src/index.ts.
+[[kv_namespaces]]
+binding = "DOCUMENTS"
+id = "1bf23f9583294c8c821d80889b72fdb6"

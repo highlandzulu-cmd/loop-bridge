@@ -58,33 +58,49 @@ frontend — the model just calls it when it decides to, same as any other
 tool. Verified end-to-end through this actual chat UI, not just the API
 directly.
 
-### `/rag-query` and `/rag-add` — manual, deterministic shortcuts
+### `/rag-query`, `/rag-add`, `/rag-list`, `/rag-get` — manual, deterministic shortcuts
 
-Two slash commands, typed directly into the normal chat message box:
+Four slash commands, typed directly into the normal chat message box:
 
 - `/rag-query <question>` — queries the RAG service directly via
   `loop-server`'s `POST /rag/query`, with **no LLM turn involved at all**.
   Faster and free of any model hallucination risk versus asking normally
-  and hoping the model decides to call the `rag_query` tool.
+  and hoping the model decides to call the `rag_query` tool. This does
+  *semantic* retrieval, not an exact lookup — `/rag-query launch-doc`
+  searches for content matching the literal words "launch-doc", it doesn't
+  fetch the document with that ID (that's `/rag-get`, below).
 - `/rag-add <path>` — ingests a file already on disk (PDF or text) into the
   RAG service via `loop-server`'s `POST /rag/ingest`, so it becomes
   queryable. `path` is resolved on the *server* machine, not the browser.
+- `/rag-list` — lists every document the RAG service has ingested (id,
+  chunk count, timestamp) via `loop-server`'s `GET /rag/documents`. No
+  argument.
+- `/rag-get <doc_id>` — fetches the **exact original text** of one
+  ingested document by its id via `loop-server`'s `GET
+  /rag/documents/:id` — a real lookup, not semantic search dressed up to
+  look like one. Use `/rag-list` first to see valid ids.
 
-Both are handled in `loop-stream.ts`'s `createLoopStreamFn` — the only real
-seam available to intercept a message before it reaches pi-agent-core (see
-that file's header comment for why: `ChatPanel`'s own send flow is owned
-entirely by the `pi-web-ui` library, with `extractPromptText`/this
+All four are handled in `loop-stream.ts`'s `createLoopStreamFn` — the only
+real seam available to intercept a message before it reaches pi-agent-core
+(see that file's header comment for why: `ChatPanel`'s own send flow is
+owned entirely by the `pi-web-ui` library, with `extractPromptText`/this
 `StreamFn` as the one customization point this app has). A matched command
 short-circuits the whole `/prompt` SSE path and instead calls the direct
 endpoint once, then synthesizes a `start`/`done` event pair so
 pi-agent-core renders the result as a normal assistant message — real
-retrieval/ingestion, not a fake "thinking" animation.
+retrieval/ingestion, not a fake "thinking" animation. The match is against
+a *trimmed* copy of the typed text — a stray leading space (hit live
+during testing) silently fell through to a real, wasted LLM turn instead
+of the intended command before this was added.
 
 Verified end-to-end live, including the eventual-consistency edge case:
 `/rag-add`ing a new file and immediately `/rag-query`ing it correctly
 returned "I don't see the answer in the provided context" (Vectorize
 hadn't indexed it yet — a few seconds' lag, not a bug) rather than
-hallucinating one, then returned the correct answer once indexed.
+hallucinating one, then returned the correct answer once indexed. Also
+verified live: `/rag-list` showing all 5 ingested docs with real chunk
+counts and timestamps, and `/rag-get launch-doc` returning the exact
+original text with no LLM involvement.
 
 ### Slash-command autocomplete
 

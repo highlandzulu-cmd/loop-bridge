@@ -6,9 +6,20 @@
 //
 // Endpoints:
 //   GET  /health              -> { ok: true }
-//   POST /ingest { text, id?} -> chunks + embeds + stores text in Vectorize
+//   POST /ingest { text, id?} -> chunks + embeds + stores text in Vectorize,
+//                                 also stores the full original text in KV
 //   POST /query  { query }    -> embeds query, retrieves matches, asks the
 //                                 LLM to answer using only that context
+//   GET  /documents           -> list every ingested doc_id + metadata
+//   GET  /documents/:id       -> the exact full text of one document
+//
+// /documents and /documents/:id exist because Vectorize alone has no way to
+// answer either question: it's pure similarity search, no "list everything"
+// API, and a metadata-filtered query still needs a query vector and is
+// capped by topK, so it can't reliably return *all* chunks of one document
+// either. The DOCUMENTS KV namespace stores the original full text per
+// doc_id independently of Vectorize, so these two are exact lookups, not
+// semantic search dressed up to look like one.
 //
 // All routes except /health require `Authorization: Bearer <RAG_API_KEY>`
 // (set via `wrangler secret put RAG_API_KEY`) — this is a public URL on a
@@ -18,7 +29,15 @@
 export interface Env {
   AI: Ai;
   VECTORIZE: VectorizeIndex;
+  DOCUMENTS: KVNamespace;
   RAG_API_KEY: string;
+}
+
+interface DocumentManifestEntry {
+  doc_id: string;
+  text: string;
+  chunks_stored: number;
+  ingested_at: string; // ISO 8601
 }
 
 const EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5"; // 768-dim
@@ -78,9 +97,13 @@ export default {
       const docId = body.id || crypto.randomUUID();
       const chunks = chunkText(body.text);
 
-      const embeddingResponse = await env.AI.run(EMBEDDING_MODEL, {
+      // @cloudflare/workers-types unions this with an async/streamed-response
+      // shape that has no `.data` — never actually returned since we don't
+      // pass a streaming option, but TS can't know that, so it's asserted
+      // here rather than narrowed at runtime for a case that can't happen.
+      const embeddingResponse = (await env.AI.run(EMBEDDING_MODEL, {
         text: chunks,
-      });
+      })) as { data: number[][] };
       const vectors = embeddingResponse.data.map((values, i) => ({
         id: `${docId}::${i}`,
         values,
@@ -88,7 +111,40 @@ export default {
       }));
       await env.VECTORIZE.upsert(vectors);
 
+      const manifestEntry: DocumentManifestEntry = {
+        doc_id: docId,
+        text: body.text,
+        chunks_stored: chunks.length,
+        ingested_at: new Date().toISOString(),
+      };
+      await env.DOCUMENTS.put(docId, JSON.stringify(manifestEntry));
+
       return json({ doc_id: docId, chunks_stored: chunks.length });
+    }
+
+    if (url.pathname === "/documents" && request.method === "GET") {
+      const list = await env.DOCUMENTS.list();
+      const entries = await Promise.all(
+        list.keys.map(async (k) => {
+          const raw = await env.DOCUMENTS.get(k.name);
+          if (!raw) return null;
+          const entry: DocumentManifestEntry = JSON.parse(raw);
+          // Listing omits the full text (could be large across many docs) —
+          // GET /documents/:id returns that.
+          return { doc_id: entry.doc_id, chunks_stored: entry.chunks_stored, ingested_at: entry.ingested_at };
+        }),
+      );
+      return json({ documents: entries.filter((e) => e !== null) });
+    }
+
+    if (url.pathname.startsWith("/documents/") && request.method === "GET") {
+      const docId = decodeURIComponent(url.pathname.slice("/documents/".length));
+      const raw = await env.DOCUMENTS.get(docId);
+      if (!raw) {
+        return json({ error: `no document with id '${docId}'` }, 404);
+      }
+      const entry: DocumentManifestEntry = JSON.parse(raw);
+      return json(entry);
     }
 
     if (url.pathname === "/query" && request.method === "POST") {
@@ -98,9 +154,9 @@ export default {
       }
       const topK = body.top_k ?? 4;
 
-      const queryEmbedding = await env.AI.run(EMBEDDING_MODEL, {
+      const queryEmbedding = (await env.AI.run(EMBEDDING_MODEL, {
         text: [body.query],
-      });
+      })) as { data: number[][] };
       const matches = await env.VECTORIZE.query(queryEmbedding.data[0], {
         topK,
         returnMetadata: true,

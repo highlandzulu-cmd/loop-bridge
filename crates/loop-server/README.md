@@ -176,6 +176,21 @@ as provisional until that's clarified.
   frontend's `/rag-add` slash command hits. `id` defaults to the file's
   name if omitted. Returns `400` if the file doesn't exist, `503` if
   `RAG_SERVICE_URL` is unset.
+- `GET /rag/documents` → list every document the RAG service has ingested
+  (`{"documents": [{"doc_id", "chunks_stored", "ingested_at"}, ...]}`).
+  What the frontend's `/rag-list` slash command hits.
+- `GET /rag/documents/:id` → the exact original text of one ingested
+  document, not a semantic search result — `{"doc_id", "text",
+  "chunks_stored", "ingested_at"}`. What `/rag-add` hits. `404` if no
+  document has that id.
+  **Unlike every other RAG endpoint above, this pair isn't part of the
+  fixed RAG interface contract** (see "Swapping in a different RAG
+  service" below) — `cloudflare-rag/`'s `/documents` and `/documents/:id`
+  exist specifically because Vectorize has no "list everything" or "exact
+  fetch by ID" API of its own (pure similarity search only), so it keeps a
+  separate KV-backed manifest just for these two. A different RAG service
+  may not implement this pair at all; whatever it returns (404, or nothing)
+  is relayed as-is rather than these two pretending to be universal.
 
 ## Tools
 

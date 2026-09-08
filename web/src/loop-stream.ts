@@ -191,6 +191,8 @@ function assistantMessage(model: Model<Api>, content: AssistantMessage["content"
 // so a pasted multi-line question/path still matches.
 const RAG_QUERY_COMMAND = /^\/rag-query\s+([\s\S]+)$/;
 const RAG_ADD_COMMAND = /^\/rag-add\s+([\s\S]+)$/;
+const RAG_LIST_COMMAND = /^\/rag-list\s*$/;
+const RAG_GET_COMMAND = /^\/rag-get\s+([\s\S]+)$/;
 
 /** Build a pi-agent-core StreamFn backed by a running loop-server instance. */
 export function createLoopStreamFn(opts: LoopStreamFnOptions) {
@@ -209,9 +211,20 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 				// sent through /prompt) because this is the only seam available
 				// to intercept before pi-web-ui's ChatPanel hands the message to
 				// pi-agent-core — see this file's header for why.
-				const queryMatch = promptText.match(RAG_QUERY_COMMAND);
-				const addMatch = promptText.match(RAG_ADD_COMMAND);
-				if (queryMatch || addMatch) {
+				//
+				// Matched against a *trimmed* copy, not promptText directly: hit
+				// live during testing — a stray leading space (from a Backspace
+				// that silently didn't register, but just as easily a real user
+				// fat-fingering a space before "/") made "^\/rag-get" fail to
+				// match, silently falling through to a real, wasted LLM turn
+				// instead of the intended direct command. Trimming a real chat
+				// message before sending is harmless either way.
+				const trimmedPromptText = promptText.trim();
+				const queryMatch = trimmedPromptText.match(RAG_QUERY_COMMAND);
+				const addMatch = trimmedPromptText.match(RAG_ADD_COMMAND);
+				const listMatch = trimmedPromptText.match(RAG_LIST_COMMAND);
+				const getMatch = trimmedPromptText.match(RAG_GET_COMMAND);
+				if (queryMatch || addMatch || listMatch || getMatch) {
 					stream.push({ type: "start", partial: assistantMessage(model, [], "stop") });
 					try {
 						if (queryMatch) {
@@ -248,6 +261,39 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 								typeof body.doc_id === "string" && typeof body.chunks_stored === "number"
 									? `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`
 									: `Ingested \`${path}\`. Response: ${JSON.stringify(body)}`;
+							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+						} else if (listMatch) {
+							// /rag/documents isn't part of the fixed RAG interface contract
+							// (crates/loop-server/README.md "Swapping in a different RAG
+							// service") — it's specific to cloudflare-rag's own manifest, so
+							// this degrades to raw JSON if a different service's response
+							// doesn't look like { documents: [...] }.
+							const res = await fetch(`${opts.baseUrl}/rag/documents`);
+							const body = await res.json();
+							if (!res.ok) {
+								throw new Error(body?.error ?? `RAG document list failed (HTTP ${res.status})`);
+							}
+							const text = Array.isArray(body.documents)
+								? body.documents.length === 0
+									? "No documents have been ingested yet. Use /rag-add <path> to add one."
+									: body.documents
+											.map((d: { doc_id?: string; chunks_stored?: number; ingested_at?: string }) => `- \`${d.doc_id}\` — ${d.chunks_stored} chunk${d.chunks_stored === 1 ? "" : "s"}, ingested ${d.ingested_at}`)
+											.join("\n")
+								: JSON.stringify(body);
+							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+						} else if (getMatch) {
+							const docId = getMatch[1].trim();
+							const res = await fetch(`${opts.baseUrl}/rag/documents/${encodeURIComponent(docId)}`);
+							const body = await res.json();
+							if (!res.ok) {
+								throw new Error(body?.error ?? `RAG document fetch failed (HTTP ${res.status})`);
+							}
+							const MAX_DISPLAY_CHARS = 8000; // keep one chat message from becoming unreasonably huge
+							const docText = typeof body.text === "string" ? body.text : JSON.stringify(body);
+							const text =
+								docText.length > MAX_DISPLAY_CHARS
+									? `${docText.slice(0, MAX_DISPLAY_CHARS)}\n\n[...truncated: ${docText.length} characters total...]`
+									: docText;
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
 						}
 					} catch (err) {

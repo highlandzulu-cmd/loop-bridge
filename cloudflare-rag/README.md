@@ -56,8 +56,23 @@ this account — plenty for manual testing, not for production traffic.
   retrieved context (explicitly told to say so if the context doesn't
   answer the question, not to guess). Returns `{"answer", "matches"}` where
   each match has its similarity `score` and source `text`.
+- `GET /documents` → lists every ingested document:
+  `{"documents": [{"doc_id", "chunks_stored", "ingested_at"}, ...]}` (full
+  text omitted from the listing — could be large across many docs).
+- `GET /documents/:id` → the **exact original text** of one document, read
+  from a separate KV-backed manifest, not Vectorize — a real lookup by id,
+  not a semantic-search approximation of one. `404` if no document has
+  that id. Returns `{"doc_id", "text", "chunks_stored", "ingested_at"}`.
 
-`/ingest` and `/query` both require `Authorization: Bearer <RAG_API_KEY>` —
+`/documents`/`/documents/:id` exist because Vectorize alone can't answer
+either question: it's pure similarity search with no "list everything" API,
+and even a metadata-filtered query still needs a query vector and is capped
+by `topK`, so it can't reliably return *every* chunk of one document either.
+`/ingest` stores the full original text in the `DOCUMENTS` KV namespace
+(see `wrangler.toml`) alongside the Vectorize upsert, specifically so these
+two can be exact lookups independent of vector search.
+
+All routes except `/health` require `Authorization: Bearer <RAG_API_KEY>` —
 this is a public URL on a free account and Workers AI usage counts against
 a shared quota, so it isn't left open to anyone who finds the URL.
 
@@ -68,16 +83,14 @@ cd cloudflare-rag
 npm install
 npx wrangler login          # opens your browser to authorize the CLI
 npx wrangler vectorize create loop-rag-index --dimensions=768 --metric=cosine
+npx wrangler kv namespace create DOCUMENTS   # paste the printed id into wrangler.toml's [[kv_namespaces]] block
 npx wrangler secret put RAG_API_KEY   # paste a random string when prompted
 npx wrangler deploy
 ```
 
 `wrangler deploy` prints the live URL (`https://loop-rag-worker.<your
 subdomain>.workers.dev`). That's what goes into `loop-server`'s
-`RAG_SERVICE_URL` — except `rag_query` in `crates/loop-server/src/main.rs`
-currently sends an unauthenticated `POST {url}/query` with no
-`Authorization` header, so it needs a small update to send the bearer token
-too before it'll work against this (tracked as open work below).
+`RAG_SERVICE_URL`/`RAG_SERVICE_API_KEY`.
 
 ## Testing it directly
 
@@ -91,6 +104,12 @@ curl -X POST https://<your-worker-url>/query \
   -H "Authorization: Bearer <RAG_API_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"query": "..."}'
+
+curl https://<your-worker-url>/documents \
+  -H "Authorization: Bearer <RAG_API_KEY>"
+
+curl https://<your-worker-url>/documents/test-doc-1 \
+  -H "Authorization: Bearer <RAG_API_KEY>"
 ```
 
 ## Known limitations / open work

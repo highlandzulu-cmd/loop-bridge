@@ -289,6 +289,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/files/content", get(read_file_content))
         .route("/rag/query", post(rag_query_handler))
         .route("/rag/ingest", post(rag_ingest_handler))
+        .route("/rag/documents", get(rag_documents_handler))
+        .route("/rag/documents/:id", get(rag_document_handler))
         .route("/terminal/ws", get(terminal_ws))
         .with_state(state)
         .layer(cors);
@@ -529,6 +531,80 @@ async fn rag_ingest_handler(Json(req): Json<RagIngestRequest>) -> Result<Json<se
         return Err((StatusCode::BAD_GATEWAY, Json(body)));
     }
     Ok(Json(body))
+}
+
+/// GET /rag/documents -> list every document the RAG service has ingested.
+/// GET /rag/documents/:id -> the exact original text of one document.
+///
+/// Unlike /rag/query and /rag/ingest, **this pair isn't part of the fixed
+/// RAG interface contract** (see crates/loop-server/README.md "Swapping in
+/// a different RAG service") — it's specific to cloudflare-rag/'s own
+/// /documents and /documents/:id, which exist because Vectorize alone has
+/// no "list everything" or "exact fetch by ID" API (pure similarity search
+/// only). A different RAG service pointed at via RAG_SERVICE_URL may not
+/// implement these at all — that's fine, whatever error it returns (404,
+/// or a connection failure) is relayed as-is rather than these two
+/// pretending to be universal when they aren't.
+async fn rag_documents_handler() -> Result<Json<serde_json::Value>, ApiError> {
+    let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RAG_SERVICE_URL is not configured on this bridge",
+        ));
+    };
+    rag_service_get(&rag_url, "/documents").await
+}
+
+async fn rag_document_handler(axum::extract::Path(doc_id): axum::extract::Path<String>) -> Result<Json<serde_json::Value>, ApiError> {
+    let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
+        return Err(api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "RAG_SERVICE_URL is not configured on this bridge",
+        ));
+    };
+    rag_service_get(&rag_url, &format!("/documents/{}", urlencoding_encode(&doc_id))).await
+}
+
+/// Shared GET-with-auth logic for the two handlers above.
+async fn rag_service_get(rag_url: &str, path: &str) -> Result<Json<serde_json::Value>, ApiError> {
+    let client = reqwest::Client::new();
+    let mut request = client.get(format!("{rag_url}{path}"));
+    if let Ok(api_key) = std::env::var("RAG_SERVICE_API_KEY") {
+        request = request.bearer_auth(api_key);
+    }
+    let res = request
+        .send()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service request failed: {e}")))?;
+
+    let status = res.status();
+    let body: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| api_error(StatusCode::BAD_GATEWAY, &format!("RAG service returned a non-JSON response: {e}")))?;
+    if !status.is_success() {
+        return Err((
+            if status == StatusCode::NOT_FOUND { StatusCode::NOT_FOUND } else { StatusCode::BAD_GATEWAY },
+            Json(body),
+        ));
+    }
+    Ok(Json(body))
+}
+
+/// Minimal path-segment percent-encoding — just enough for a doc_id to
+/// safely sit inside a URL path segment (handles the characters a filename
+/// realistically contains: spaces, slashes if someone passes a nested path
+/// as an id, etc). Not a full RFC 3986 implementation; this project has no
+/// other need for one, so it isn't worth pulling in a crate for.
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// POST /prompt { "text": "..." } -> SSE stream of JSON events.

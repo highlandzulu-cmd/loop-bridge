@@ -408,13 +408,15 @@ interface SlashCommand {
 	description: string;
 }
 
-// The two commands loop-stream.ts's createLoopStreamFn actually handles.
-// Keep this list and that file's RAG_QUERY_COMMAND/RAG_ADD_COMMAND regexes
-// in sync manually — there's no shared source of truth between the two
-// files today (this one drives the menu, that one drives execution).
+// The commands loop-stream.ts's createLoopStreamFn actually handles. Keep
+// this list and that file's RAG_*_COMMAND regexes in sync manually —
+// there's no shared source of truth between the two files today (this one
+// drives the menu, that one drives execution).
 const SLASH_COMMANDS: SlashCommand[] = [
 	{ name: "/rag-query", hint: "<question>", description: "Query the RAG service directly — no LLM turn" },
 	{ name: "/rag-add", hint: "<path>", description: "Ingest a file on disk into the RAG service" },
+	{ name: "/rag-list", hint: "", description: "List every document ingested into the RAG service" },
+	{ name: "/rag-get", hint: "<doc_id>", description: "Fetch the exact original text of one ingested document" },
 ];
 
 /**
