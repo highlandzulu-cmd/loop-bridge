@@ -148,19 +148,47 @@ in the textarea the same way. A second click on `+` while its own
 unfiltered menu is open closes it again; clicking `+` while the
 typed-filter menu is open instead switches to the full list.
 
-**Real bug hit and fixed after shipping this**: the setup code originally
-found `agent-interface`/`message-editor` once, one `requestAnimationFrame`
-after `chatPanel.setAgent()` resolved, and gave up silently if they weren't
-there yet. That worked in every test pass during development — but those
-all ran against an already-warm dev-server module cache from repeated
-reloads. On a real user's genuinely cold hard-refresh (full re-fetch/parse
-of every module, including the sizeable `pi-web-ui`/`pi-agent-core`/xterm/
-pdfjs dependency chunks), `AgentInterface`'s own reactive render plausibly
-took longer than one frame to actually insert `<message-editor>` — so
-`setupSlashCommands()` found nothing, gave up, and neither the `+` button
-nor the autocomplete ever appeared, with no error anywhere. Fixed by
-polling every 100ms for up to ~5s instead of checking once
-(`setupSlashCommands`/`initSlashCommands` in `main.ts`).
+**Real bug #1, hit and fixed after shipping this**: the setup code
+originally found `agent-interface`/`message-editor` once, one
+`requestAnimationFrame` after `chatPanel.setAgent()` resolved, and gave up
+silently if they weren't there yet. That worked in every test pass during
+development — but those all ran against an already-warm dev-server module
+cache from repeated reloads. On a real user's genuinely cold hard-refresh
+(full re-fetch/parse of every module, including the sizeable
+`pi-web-ui`/`pi-agent-core`/xterm/pdfjs dependency chunks),
+`AgentInterface`'s own reactive render plausibly took longer than one frame
+to actually insert `<message-editor>` — so `setupSlashCommands()` found
+nothing, gave up, and neither the `+` button nor the autocomplete ever
+appeared, with no error anywhere. Fixed by polling every 100ms for up to
+~5s instead of checking once (`setupSlashCommands`/`initSlashCommands` in
+`main.ts`).
+
+**Real bug #2, root-caused after the same user's clicks on menu items did
+nothing even once the menu itself was showing correctly**: `renderMenu()`
+attached a fresh `mousedown`/`click` listener to each item individually,
+and — critically — `mouseenter` (hover) called `renderMenu()` too, to
+update the highlighted style. That meant every hover did `menu.innerHTML =
+""` and rebuilt *every* item from scratch, destroying and recreating the
+exact DOM node the mouse was currently over, mid-hover. Depending on
+browser/trackpad timing that's a real race: a hover-triggered rebuild
+landing between `mousedown` and `click` on one physical click gesture
+means the element those listeners were attached to no longer exists by the
+time `click` would fire, and the click lands on nothing. Never reproduced
+in this session's own dev-server testing (never happened to hit the exact
+timing), reliably broken for the one real user who tried it — until a
+*real* automated click on a menu item was tried for the first time after
+the fix below, and it worked immediately, which is strong evidence this
+really was the cause and not just a coincidental fix.
+
+Fixed by switching to event delegation: `mousedown`/`click` listeners live
+once on the stable `menu` container itself (never destroyed), using each
+item's `data-cmd-index` to identify which command a click landed on rather
+than depending on which specific ephemeral child node still exists.
+Hovering is now plain CSS `:hover` (`.pw-slash-menu-item` in `app.css`),
+with zero DOM rebuilding on mouse movement at all — keyboard-driven
+highlighting (arrow keys) still triggers `renderMenu()`, which is fine
+since that's not competing against an in-progress click gesture the way
+hover-during-click was.
 
 Verified live end-to-end (button click confirmed via screenshot, item
 selection confirmed via the same direct-`mousedown`-dispatch method noted

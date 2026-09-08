@@ -514,11 +514,34 @@ function initSlashCommands(messageEditor: MessageEditor, textarea: HTMLTextAreaE
 		});
 	};
 
+	// Root-caused why a real user's clicks did nothing: the previous version
+	// attached a `mousedown`/`click` listener to each item individually, AND
+	// had `mouseenter` (hover) call renderMenu() to update the highlighted
+	// style — which did `menu.innerHTML = ""` and rebuilt every item from
+	// scratch, destroying and recreating the exact DOM node the mouse was
+	// currently over, on every hover, mid-gesture. Depending on browser/
+	// trackpad timing that's a real race: if a hover-triggered rebuild lands
+	// between mousedown and click on the same physical gesture, the original
+	// element the listeners were on is gone and the click can land on
+	// nothing. Worked in this session's own repeated dev-server testing
+	// (apparently never hit the race), never worked at all for the one real
+	// user who tried it.
+	//
+	// Fixed by not doing that: listeners are attached ONCE on `menu` itself
+	// (event delegation, using each item's `data-cmd-index`) — `menu` is
+	// never destroyed/recreated, only its children are, and delegation
+	// doesn't care whether a specific child element still exists by the time
+	// a later event fires, only what's under the pointer *at that moment*.
+	// Hover highlighting is now plain CSS `:hover` (see app.css's
+	// `.pw-slash-menu-item`) instead of JS tracking + a full rebuild —
+	// zero DOM churn on mouse movement at all.
 	const renderMenu = () => {
 		menu.innerHTML = "";
 		filtered.forEach((cmd, i) => {
 			const item = document.createElement("div");
-			item.style.cssText = `padding:8px 12px; cursor:pointer; font-size:12px; ${i === highlighted ? "background:var(--accent);" : ""}`;
+			item.className = "pw-slash-menu-item";
+			item.dataset.cmdIndex = String(i);
+			if (i === highlighted) item.classList.add("pw-slash-menu-item-active");
 			// Built with textContent, not innerHTML — cmd.hint contains literal
 			// "<" / ">" (e.g. "<question>"), which innerHTML would parse as an
 			// (unknown, invisible) HTML tag rather than display as text. Hit
@@ -534,26 +557,23 @@ function initSlashCommands(messageEditor: MessageEditor, textarea: HTMLTextAreaE
 			descLine.style.cssText = "opacity:0.65; font-size:11px; margin-top:2px";
 			descLine.textContent = cmd.description;
 			item.append(nameLine, descLine);
-			// mousedown, not click: fires before the textarea would blur, so
-			// select() can still refocus it afterward without a visible flicker.
-			// A real user reported clicking a menu item doing nothing even
-			// after this — couldn't reproduce or get a console error remotely
-			// (no access to their actual browser), so a real `click` listener
-			// is added too as a defensive fallback rather than trusting
-			// mousedown alone: select() is idempotent, so firing from both is
-			// harmless if only one of them was ever actually the problem.
-			item.addEventListener("mousedown", (e) => {
-				e.preventDefault();
-				select(cmd);
-			});
-			item.addEventListener("click", () => select(cmd));
-			item.addEventListener("mouseenter", () => {
-				highlighted = i;
-				renderMenu();
-			});
 			menu.appendChild(item);
 		});
 	};
+
+	// One delegated listener for the whole menu's life, not re-attached on
+	// every render — see the note above on why that matters.
+	const selectFromEvent = (e: Event) => {
+		const item = (e.target as HTMLElement).closest<HTMLElement>(".pw-slash-menu-item");
+		if (!item?.dataset.cmdIndex) return;
+		const cmd = filtered[Number(item.dataset.cmdIndex)];
+		if (cmd) select(cmd);
+	};
+	menu.addEventListener("mousedown", (e) => {
+		e.preventDefault(); // don't blur the textarea before select() can refocus it
+		selectFromEvent(e);
+	});
+	menu.addEventListener("click", selectFromEvent);
 
 	// anchor defaults to the textarea (autocomplete-while-typing case) but
 	// the "+" button below positions the same menu against itself instead.

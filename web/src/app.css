@@ -208,3 +208,21 @@ assistant-message.pw-tool-result markdown-block {
 	font-size: 12px;
 	line-height: 1.5;
 }
+
+/* Slash-command menu items (main.ts's setupSlashCommands). Hover highlight
+   is plain CSS, not JS re-rendering the DOM on every mouseenter — that used
+   to destroy and recreate the exact item under the cursor on every hover,
+   a real race with the click that was landing on it (root-caused after a
+   real user's clicks were doing nothing). pw-slash-menu-item-active is the
+   *keyboard*-navigated highlight (arrow keys), separate from :hover, since
+   :hover only reflects actual mouse position. */
+.pw-slash-menu-item {
+	padding: 8px 12px;
+	cursor: pointer;
+	font-size: 12px;
+}
+
+.pw-slash-menu-item:hover,
+.pw-slash-menu-item-active {
+	background: var(--accent);
+}
