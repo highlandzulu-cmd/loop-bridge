@@ -176,3 +176,35 @@ message-editor textarea {
 message-editor textarea::placeholder {
 	font-family: var(--font-sans);
 }
+
+/* Direct RAG tool results (/rag-query, /rag-add, /rag-list, /rag-get —
+   see loop-stream.ts's tagLastAssistantMessageAsToolResult) get a distinct
+   treatment from normal model replies: --primary (purple) instead of the
+   baseline --accent (teal) left border above, a tinted card background,
+   and a small uppercase command label — "like Claude" tool-call
+   highlighting, per explicit request. The label text comes from the
+   data-tool-label attribute via ::before rather than being duplicated
+   into the DOM, so there's exactly one source of truth for it. */
+assistant-message.pw-tool-result {
+	border-left: 3px solid var(--primary);
+	background: color-mix(in oklch, var(--primary) 6%, var(--background));
+	border-radius: var(--radius);
+	padding: 10px 12px 10px 12px;
+}
+
+assistant-message.pw-tool-result::before {
+	content: attr(data-tool-label);
+	display: block;
+	font-family: var(--font-sans);
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--primary);
+	margin-bottom: 6px;
+}
+
+assistant-message.pw-tool-result markdown-block {
+	font-size: 12px;
+	line-height: 1.5;
+}

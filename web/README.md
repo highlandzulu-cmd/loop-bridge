@@ -136,6 +136,58 @@ that; this is a testing-tool limitation, not a product bug — the same
 conclusion reached for Terminal's Enter key, for the same underlying reason
 (synthetic input into custom, non-native-`<input>`-adjacent UI).
 
+### "+" button — browse commands without knowing to type "/"
+
+A small circular `+` button sits just left of the send button (positioned
+via the same `position:fixed`-anchored-to-a-library-element technique as
+the dropdown, anchored to whichever button is last in `MessageEditor`'s
+button row — reliably the send button regardless of which optional buttons
+in between are showing). Clicking it opens the exact same dropdown, just
+unfiltered — every command, not a typed-prefix match. Selecting one fills
+in the textarea the same way. A second click on `+` while its own
+unfiltered menu is open closes it again; clicking `+` while the
+typed-filter menu is open instead switches to the full list.
+
+Verified live end-to-end (button click confirmed via screenshot, item
+selection confirmed via the same direct-`mousedown`-dispatch method noted
+above for the same automation-tool reason) — selecting `/rag-list` from
+the `+` menu, then sending, produced a correct, fully-highlighted result
+(see below).
+
+### Highlighting RAG results — "like Claude"
+
+`/rag-query`, `/rag-add`, `/rag-list`, and `/rag-get` results render
+visually distinct from normal model replies: a purple left border and
+tinted background (vs. the baseline teal accent every assistant message
+already has) plus a small uppercase command label, e.g. `RAG-QUERY`, above
+the content.
+
+Deliberately **not** built by giving the synthesized message a real
+`toolCall` content block, which would let pi-web-ui's own native
+`<tool-message>` card render it (nicer, closer to "the library's own tool
+UI") — `loop-stream.ts`'s file header already documents a real regression
+hit while building basic `/rag-query` support: a `done` message containing
+a `toolCall` block makes pi-agent-core try to execute it itself, fail
+(this app's `Agent` has no registered tools), and fire a bogus follow-up
+request. Achieving a real `toolResult` pairing instead would mean mutating
+`agent.state.messages` directly from outside the whole `StreamFn` contract
+— a bigger, separately-risky change, not taken on for a visual-only ask.
+
+Instead, `tagLastAssistantMessageAsToolResult()` in `loop-stream.ts` runs
+right after each command's synthesized `done` event: finds the
+`<assistant-message>` element that response just became (light DOM again,
+so plain `querySelectorAll`) and tags it directly with a CSS class +
+label attribute, styled in `app.css`. Safe specifically because nothing
+else ever runs concurrently with a `/rag-*` command (no real model turn in
+flight) — "the last `<assistant-message>` in the DOM right now" is
+unambiguous.
+
+Verified live: `/rag-list`, `/rag-query`, and a normal (non-command)
+message sent back to back in the same conversation — screenshots confirm
+the two RAG results both render with the purple highlight + correct
+uppercase label, and the plain "say hello" reply in between renders with
+the normal teal-accent styling only, un-highlighted. No false positives.
+
 ## Running it
 
 From the repo root:

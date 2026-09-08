@@ -449,6 +449,13 @@ function setupSlashCommands(chatPanel: ChatPanel) {
 	if (!messageEditor) return;
 	const textarea = messageEditor.querySelector("textarea");
 	if (!textarea) return;
+	// MessageEditor's button row, left-to-right: attachment (paperclip),
+	// [thinking selector], ..., [model selector], send/stop — the send
+	// button is reliably the last one, regardless of which optional buttons
+	// in between are showing. No id/aria-label to key off instead (checked
+	// MessageEditor.ts's render()), so this is coupled to that ordering.
+	const buttons = messageEditor.querySelectorAll("button");
+	const sendButton = buttons[buttons.length - 1] as HTMLElement | undefined;
 
 	const menu = document.createElement("div");
 	menu.className = "pw-slash-menu";
@@ -510,10 +517,12 @@ function setupSlashCommands(chatPanel: ChatPanel) {
 		});
 	};
 
-	const updatePosition = () => {
-		const rect = textarea.getBoundingClientRect();
-		menu.style.left = `${rect.left}px`;
-		menu.style.width = `${rect.width}px`;
+	// anchor defaults to the textarea (autocomplete-while-typing case) but
+	// the "+" button below positions the same menu against itself instead.
+	const updatePosition = (anchor: HTMLElement = textarea) => {
+		const rect = anchor.getBoundingClientRect();
+		menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 268))}px`;
+		menu.style.width = anchor === textarea ? `${rect.width}px` : "260px";
 		menu.style.bottom = `${window.innerHeight - rect.top + 8}px`;
 	};
 
@@ -571,8 +580,57 @@ function setupSlashCommands(chatPanel: ChatPanel) {
 	window.addEventListener("resize", () => {
 		if (filtered.length > 0) updatePosition();
 	});
+
+	// "+" button: an always-available way to browse every command by
+	// clicking, not just by knowing to type "/" — reuses this same menu
+	// (full, unfiltered list) rather than building a second one.
+	let plusButton: HTMLButtonElement | undefined;
+	if (sendButton) {
+		plusButton = document.createElement("button");
+		plusButton.className = "pw-slash-plus";
+		plusButton.type = "button";
+		plusButton.setAttribute("aria-label", "Tool commands");
+		plusButton.textContent = "+";
+		plusButton.style.cssText =
+			"position:fixed; z-index:999; width:32px; height:32px; border-radius:50%; border:1px solid var(--border); background:var(--card); color:var(--foreground); font-family:inherit; font-size:16px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;";
+		document.body.appendChild(plusButton);
+
+		const updatePlusPosition = () => {
+			const rect = sendButton.getBoundingClientRect();
+			// Sits just left of the send button, vertically centered on it.
+			plusButton!.style.left = `${rect.left - 40}px`;
+			plusButton!.style.top = `${rect.top + rect.height / 2 - 16}px`;
+		};
+		updatePlusPosition();
+		window.addEventListener("resize", updatePlusPosition);
+		// The button row's own layout can shift (e.g. attachments appearing
+		// changes message-editor's height, which can move the row within the
+		// page even though the row's internal position doesn't change) —
+		// cheap to just recompute on every textarea input too.
+		textarea.addEventListener("input", updatePlusPosition);
+
+		plusButton.addEventListener("mousedown", (e) => {
+			e.preventDefault(); // don't blur the textarea
+			if (menu.style.display !== "none" && filtered === SLASH_COMMANDS) {
+				hide();
+				return;
+			}
+			filtered = SLASH_COMMANDS;
+			highlighted = 0;
+			updatePosition(plusButton!);
+			menu.style.display = "block";
+			renderMenu();
+		});
+	}
+
+	// One combined "click outside closes the menu" listener — has to know
+	// about both possible openers (typing in the textarea, or the "+"
+	// button) so picking one doesn't immediately re-close what the other
+	// just opened via the same mousedown event.
 	document.addEventListener("mousedown", (e) => {
-		if (filtered.length > 0 && e.target !== textarea && !menu.contains(e.target as Node)) hide();
+		if (filtered.length === 0) return;
+		if (e.target === textarea || e.target === plusButton || menu.contains(e.target as Node)) return;
+		hide();
 	});
 }
 

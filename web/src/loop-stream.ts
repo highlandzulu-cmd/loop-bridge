@@ -186,6 +186,44 @@ function assistantMessage(model: Model<Api>, content: AssistantMessage["content"
 	};
 }
 
+/**
+ * Visually tags the chat bubble a /rag-* command's result just rendered
+ * into, so it reads as a direct tool result rather than a normal model
+ * reply — the highlighting the user asked for ("like Claude").
+ *
+ * Deliberately NOT done by giving the synthesized message a real `toolCall`
+ * content block (which would reuse pi-web-ui's own native tool-call card —
+ * nicer, but a hard no: this file's header already documents, from a real
+ * regression hit while building the basic /rag-query support, that a
+ * "done" message containing a toolCall block makes pi-agent-core try to
+ * execute it itself, fail, and fire a bogus follow-up request. Achieving a
+ * real toolResult pairing would mean mutating `agent.state.messages`
+ * directly from outside the StreamFn entirely — a bigger, separately-risky
+ * change the same header calls out as not worth it here).
+ *
+ * Instead: after the synthesized "done" event is pushed, find the
+ * `<assistant-message>` element it just became (light DOM, confirmed live
+ * — pi-web-ui overrides Lit's createRenderRoot() on every component in
+ * this tree) and tag it directly with a CSS class + a label attribute for
+ * app.css to style. Safe specifically because nothing else runs
+ * concurrently with a /rag-* command (no real model turn in flight), so
+ * "the last <assistant-message> in the DOM right now" is unambiguously
+ * this one — a double requestAnimationFrame gives Lit's async render a
+ * moment to actually add it first.
+ */
+function tagLastAssistantMessageAsToolResult(label: string) {
+	requestAnimationFrame(() => {
+		requestAnimationFrame(() => {
+			const nodes = document.querySelectorAll("assistant-message");
+			const last = nodes[nodes.length - 1];
+			if (last) {
+				last.classList.add("pw-tool-result");
+				last.setAttribute("data-tool-label", label);
+			}
+		});
+	});
+}
+
 // Matches "/rag-query <question>" or "/rag-add <path>" as the entire typed
 // message (not just a prefix elsewhere in the text) — [\s\S]+ instead of .+
 // so a pasted multi-line question/path still matches.
@@ -242,6 +280,7 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 								: "";
 							const text = `${body.answer ?? JSON.stringify(body)}${sources ? `\n\nSources: ${sources}` : ""}`;
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+							tagLastAssistantMessageAsToolResult("rag-query");
 						} else if (addMatch) {
 							const path = addMatch[1].trim();
 							const res = await fetch(`${opts.baseUrl}/rag/ingest`, {
@@ -262,6 +301,7 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 									? `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`
 									: `Ingested \`${path}\`. Response: ${JSON.stringify(body)}`;
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+							tagLastAssistantMessageAsToolResult("rag-add");
 						} else if (listMatch) {
 							// /rag/documents isn't part of the fixed RAG interface contract
 							// (crates/loop-server/README.md "Swapping in a different RAG
@@ -281,6 +321,7 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 											.join("\n")
 								: JSON.stringify(body);
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+							tagLastAssistantMessageAsToolResult("rag-list");
 						} else if (getMatch) {
 							const docId = getMatch[1].trim();
 							const res = await fetch(`${opts.baseUrl}/rag/documents/${encodeURIComponent(docId)}`);
@@ -295,6 +336,7 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 									? `${docText.slice(0, MAX_DISPLAY_CHARS)}\n\n[...truncated: ${docText.length} characters total...]`
 									: docText;
 							stream.push({ type: "done", reason: "stop", message: assistantMessage(model, [{ type: "text", text }], "stop") });
+							tagLastAssistantMessageAsToolResult("rag-get");
 						}
 					} catch (err) {
 						const text = err instanceof Error ? err.message : String(err);
