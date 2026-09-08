@@ -108,18 +108,23 @@ async function main() {
 		chatPanel.agentInterface.enableModelSelector = false;
 	}
 
-	// Slash-command autocomplete (/rag-query, /rag-add — see loop-stream.ts)
-	// so typing "/" surfaces clickable options, matching how Claude's own
-	// input works. pi-web-ui has no built-in slash-command support and
-	// MessageEditor's `onInput` prop isn't wired up by AgentInterface (dead
-	// end, confirmed by reading its render()), so the only real hook is
-	// reaching directly into the shadow DOM for the actual <textarea> —
-	// invasive, but it's an open shadow root (Lit's default) and MessageEditor
-	// exposes a plain `value` property with a normal reactive setter (no
-	// hidden side effects, confirmed by reading it) that's safe to set from
-	// outside. Deferred one frame past setAgent() resolving so agent-interface
-	// and message-editor have actually rendered their shadow DOM.
-	requestAnimationFrame(() => setupSlashCommands(chatPanel));
+	// Slash-command autocomplete + "+" menu (/rag-query, /rag-add, /rag-list,
+	// /rag-get — see loop-stream.ts) so typing "/" or clicking "+" surfaces
+	// clickable options, matching how Claude's own input works. pi-web-ui
+	// has no built-in slash-command support and MessageEditor's `onInput`
+	// prop isn't wired up by AgentInterface (dead end, confirmed by reading
+	// its render()), so the only real hook is reaching directly into the DOM
+	// for the actual <textarea> — invasive, but it's light DOM (Lit's
+	// createRenderRoot() overridden to return `this`, confirmed live) and
+	// MessageEditor exposes a plain `value` property with a normal reactive
+	// setter (no hidden side effects, confirmed by reading it) that's safe
+	// to set from outside. setupSlashCommands() polls internally until
+	// agent-interface/message-editor have actually rendered — a fixed
+	// one-frame delay here previously wasn't enough on a real user's cold
+	// hard-refresh (module fetch/parse takes longer than one frame; the
+	// dev-server-cache-warmed browser this was built and re-tested in never
+	// hit that), and failed completely silently when it wasn't.
+	setupSlashCommands(chatPanel);
 
 	// Verified live, root-caused: pi-agent-core's Agent mutates state.messages
 	// in place (same array reference across turns) instead of replacing it.
@@ -442,13 +447,39 @@ const SLASH_COMMANDS: SlashCommand[] = [
  * avoids fighting renderShell()'s own re-render cycle for something this
  * self-contained.
  */
-function setupSlashCommands(chatPanel: ChatPanel) {
+/**
+ * Polls for `agent-interface` -> `message-editor` -> `textarea` (+ its
+ * button row) to actually exist before wiring anything up, instead of a
+ * fixed one-frame delay after `setAgent()` resolves.
+ *
+ * The original version used a single `requestAnimationFrame` and worked
+ * fine in every one of this session's own test passes — but those all ran
+ * against an already-warm dev-server module cache from repeated reloads.
+ * On a genuinely cold load (a real user's first hard-refresh, full
+ * re-fetch/re-parse of every module) `AgentInterface`'s own reactive
+ * render can plausibly take longer than one frame to actually insert
+ * `<message-editor>`, so the one-shot check silently found nothing and
+ * gave up — no `+` button, no autocomplete, no error, nothing logged.
+ * Hit live: a real user's hard-refreshed browser showed neither feature
+ * at all despite the dev server correctly serving the updated code.
+ */
+function setupSlashCommands(chatPanel: ChatPanel, attemptsLeft = 50) {
 	const agentInterface = chatPanel.agentInterface;
-	if (!agentInterface) return;
-	const messageEditor = agentInterface.querySelector("message-editor") as MessageEditor | null;
-	if (!messageEditor) return;
-	const textarea = messageEditor.querySelector("textarea");
-	if (!textarea) return;
+	const messageEditor = agentInterface?.querySelector("message-editor") as MessageEditor | null;
+	const textarea = messageEditor?.querySelector("textarea");
+	if (!agentInterface || !messageEditor || !textarea) {
+		if (attemptsLeft > 0) {
+			setTimeout(() => setupSlashCommands(chatPanel, attemptsLeft - 1), 100);
+		}
+		// After ~5s of retrying, give up silently rather than loop forever —
+		// at that point something else is genuinely wrong (not just slow to
+		// render) and retrying further wouldn't help.
+		return;
+	}
+	initSlashCommands(messageEditor, textarea);
+}
+
+function initSlashCommands(messageEditor: MessageEditor, textarea: HTMLTextAreaElement) {
 	// MessageEditor's button row, left-to-right: attachment (paperclip),
 	// [thinking selector], ..., [model selector], send/stop — the send
 	// button is reliably the last one, regardless of which optional buttons

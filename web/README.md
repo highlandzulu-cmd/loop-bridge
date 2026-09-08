@@ -148,6 +148,20 @@ in the textarea the same way. A second click on `+` while its own
 unfiltered menu is open closes it again; clicking `+` while the
 typed-filter menu is open instead switches to the full list.
 
+**Real bug hit and fixed after shipping this**: the setup code originally
+found `agent-interface`/`message-editor` once, one `requestAnimationFrame`
+after `chatPanel.setAgent()` resolved, and gave up silently if they weren't
+there yet. That worked in every test pass during development — but those
+all ran against an already-warm dev-server module cache from repeated
+reloads. On a real user's genuinely cold hard-refresh (full re-fetch/parse
+of every module, including the sizeable `pi-web-ui`/`pi-agent-core`/xterm/
+pdfjs dependency chunks), `AgentInterface`'s own reactive render plausibly
+took longer than one frame to actually insert `<message-editor>` — so
+`setupSlashCommands()` found nothing, gave up, and neither the `+` button
+nor the autocomplete ever appeared, with no error anywhere. Fixed by
+polling every 100ms for up to ~5s instead of checking once
+(`setupSlashCommands`/`initSlashCommands` in `main.ts`).
+
 Verified live end-to-end (button click confirmed via screenshot, item
 selection confirmed via the same direct-`mousedown`-dispatch method noted
 above for the same automation-tool reason) — selecting `/rag-list` from
