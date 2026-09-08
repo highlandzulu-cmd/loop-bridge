@@ -536,10 +536,17 @@ function initSlashCommands(messageEditor: MessageEditor, textarea: HTMLTextAreaE
 			item.append(nameLine, descLine);
 			// mousedown, not click: fires before the textarea would blur, so
 			// select() can still refocus it afterward without a visible flicker.
+			// A real user reported clicking a menu item doing nothing even
+			// after this — couldn't reproduce or get a console error remotely
+			// (no access to their actual browser), so a real `click` listener
+			// is added too as a defensive fallback rather than trusting
+			// mousedown alone: select() is idempotent, so firing from both is
+			// harmless if only one of them was ever actually the problem.
 			item.addEventListener("mousedown", (e) => {
 				e.preventDefault();
 				select(cmd);
 			});
+			item.addEventListener("click", () => select(cmd));
 			item.addEventListener("mouseenter", () => {
 				highlighted = i;
 				renderMenu();
