@@ -64,6 +64,100 @@ provider (for chat), and `loop-server` → the Cloudflare Worker (for RAG).
 Everything else — the terminal, file browsing, the harness itself — runs
 locally.
 
+## How the bridge actually connects the UI to the harness
+
+This is the core problem the whole `loop-server` crate exists to solve:
+**`AgentHarness` is a Rust object with a Rust API — it has no idea what a
+browser, HTTP, or JSON is.** The TUI (`loop-cli`) talks to it through
+direct function calls in the same process. To let a browser talk to the
+same harness, something has to sit in between and translate in both
+directions — that's the bridge, and it's genuinely just that: a
+translation layer with no intelligence of its own. It never decides
+anything, never talks to the LLM directly, never runs a tool itself — it
+only relays.
+
+### One harness, shared by every request
+
+`loop-server` boots exactly **one** `AgentHarness` at startup, using the
+same `bootstrap()` function `loop-cli` calls — not a reimplementation, the
+literal same code path. That one harness instance lives for the life of
+the process and is shared by every browser request.
+
+### The event bus in the middle
+
+The harness doesn't return one big response — internally, it emits a
+stream of `AgentEvent`s as it works (`MessageStart`, text/thinking deltas
+as the model generates them, `ToolExecutionStart`/`End` as it runs
+`bash`/`rag_query`/etc., `MessageEnd`, and so on). `loop-server` subscribes
+to that stream **exactly once**, at startup, and re-broadcasts every event
+onto an internal `tokio::sync::broadcast` channel.
+
+That one extra hop matters: subscribing to the harness fresh on every
+`/prompt` request was the first approach, and it leaked — `AgentHarness`'s
+`subscribe()` has no way to unsubscribe, so every request would've added a
+permanent listener that outlives the request forever. Routing everything
+through one shared broadcast channel instead means each request's listener
+is just a cheap `Receiver`, cleaned up automatically the moment its
+response ends.
+
+### One request, start to finish
+
+```mermaid
+sequenceDiagram
+    participant UI as Browser (web/)
+    participant LS as loop-server
+    participant H as AgentHarness
+    participant LLM as LLM provider
+
+    UI->>LS: POST /prompt {"text": "..."}
+    LS->>LS: subscribe a fresh Receiver<br/>to the shared event broadcast
+    LS->>H: harness.prompt(text)
+    activate H
+    H->>LLM: chat completion (streaming)
+    LLM-->>H: token deltas
+    H-->>LS: AgentEvent::MessageUpdate (via broadcast)
+    LS-->>UI: SSE: data: {"type":"text_delta",...}
+    Note over H: model decides to call a tool
+    H->>H: execute tool for real<br/>(bash / read_document / rag_query)
+    H-->>LS: AgentEvent::ToolExecutionStart/End
+    H->>LLM: follow-up completion with tool result
+    LLM-->>H: final response
+    H-->>LS: AgentEvent::MessageEnd (stopReason != toolUse)
+    deactivate H
+    LS-->>UI: SSE: data: {"type":"stream_end"}
+    LS->>UI: connection closes
+```
+
+Everything from `harness.prompt(text)` down happens entirely server-side,
+inside one `/prompt` call — including a full tool-calling round trip
+(model → tool call → real execution → model again), which can mean several
+internal `MessageStart`/`MessageEnd` pairs inside one SSE stream. Only the
+last one, whose `stopReason` isn't `toolUse`, is the real end of the turn;
+the browser never sees the intermediate ones as separate turns.
+
+### The other half of the bridge: reshaping the stream in the browser
+
+Loop's event shape (`AgentEvent`) and what the chat UI library
+(`pi-agent-core`) expects to receive from a normal LLM stream
+(`AssistantMessageEvent`) are different protocols — Loop wraps `start`/
+`done` inside `MessageStart`/`MessageEnd`, only forwarding the
+delta-producing middle events as-is. `web/src/loop-stream.ts`'s
+`createLoopStreamFn` is a custom `StreamFn` that reads the `/prompt` SSE
+stream and re-synthesizes it into the shape `pi-agent-core` actually
+expects, so the rest of the chat UI can render it exactly as if it were
+talking to a real LLM API directly — it has no idea `loop-server` (or
+Loop, or a bridge) exists at all. See `web/README.md` for the specific
+regressions hit getting this translation exactly right.
+
+### Terminal and Files: simpler, separate bridges
+
+Chat needs a persistent, ordered event stream — SSE. Terminal needs
+bidirectional byte-level I/O — a real WebSocket carrying a real PTY's raw
+input/output (`portable-pty`), nothing translated, just relayed. Files
+needs neither — plain, stateless HTTP GET per request. Three different
+protocols because they're three genuinely different needs, not one
+protocol stretched to fit everything.
+
 ## Features
 
 ### Chat
