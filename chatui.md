@@ -303,28 +303,3 @@ own KV-backed manifest, since most vector databases (including Vectorize)
 have no native "list everything" or "exact fetch by ID" API. A real RAG
 system may not support an equivalent; those two commands simply won't work
 until it does (or until an adapter fakes that layer too).
-
-## Security — read before deploying anywhere but `localhost`
-
-This bridge has **no authentication on any endpoint**. `bash` tool
-execution is real, unsandboxed, and runs directly on the host — anything
-that can reach `LOOP_SERVER_CORS_ORIGIN` can make the model run arbitrary
-shell commands on this machine. `/files` can read anywhere the process's
-user can read (the whole filesystem, by explicit design decision — see
-`crates/loop-server/README.md`). None of this is a problem on `localhost`;
-all of it is a real problem the moment this is reachable from anywhere
-else. Fix authentication and sandboxing before any real deployment — see
-`crates/loop-server/README.md`'s "Known limitations" for the full list.
-
-## Known limitations
-
-- One turn at a time, process-wide — fine for one user, not multi-tenant
-  without real per-session isolation.
-- No auth anywhere (see Security above).
-- Tool-call result bubbles can't show pi-web-ui's native "Tool Call" card
-  styling for the direct RAG slash commands — a real regression was hit
-  trying that approach (see `web/README.md`'s "Highlighting RAG results"),
-  so they get custom CSS highlighting instead.
-- `/rag-list`/`/rag-get` depend on a feature (`cloudflare-rag`'s document
-  manifest) that isn't part of the portable RAG interface — won't work
-  against a different RAG service unless it offers an equivalent.
