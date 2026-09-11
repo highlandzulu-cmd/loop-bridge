@@ -11,7 +11,7 @@ Production-grade AI harness in Rust by **Soket AI**: unified LLM API, stateful a
 | **loop-cli** | [`crates/loop-cli`](crates/loop-cli) | Interactive `loop` TUI (ratatui) |
 | **loop-server** | [`crates/loop-server`](crates/loop-server/README.md) | HTTP/SSE bridge exposing `AgentHarness` to a web frontend, instead of the TUI |
 
-Plus [`web/`](web/README.md) — a browser chat UI (`pi-web-ui`) that talks to `loop-server` — and [`cloudflare-rag/`](cloudflare-rag/README.md), a RAG service. Together, `loop-server` + `web/` + `cloudflare-rag/` are a second way to use the same unmodified harness the TUI uses, plus retrieval-augmented generation. **See [`chat ui.md`](chat%20ui.md) for the full system overview** (architecture diagram, features, API reference, RAG integration contract) — the individual READMEs go deeper on each piece.
+Plus [`web/`](web/README.md) — a browser chat UI (`pi-web-ui`) that talks to `loop-server` — and [`cloudflare-rag/`](cloudflare-rag/README.md), a RAG service. Together, `loop-server` + `web/` + `cloudflare-rag/` are a second way to use the same unmodified harness the TUI uses, plus retrieval-augmented generation. **See [`chatui.md`](chatui.md) for the full system overview** (architecture diagram, features, API reference, RAG integration contract) — the individual READMEs go deeper on each piece.
 
 ## Quick start
 
