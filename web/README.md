@@ -52,11 +52,14 @@ than left implying a mechanism that isn't real.
 RAG is real now, but entirely on the backend: `rag_query` (see
 `crates/loop-server/README.md` "Tools") is a tool the *model* can choose to
 call mid-conversation, configured server-side via `RAG_SERVICE_URL` /
-`RAG_SERVICE_API_KEY` in `.env`, currently pointed at a live Cloudflare
-Worker (`cloudflare-rag/`). There's nothing to connect or toggle from this
-frontend — the model just calls it when it decides to, same as any other
-tool. Verified end-to-end through this actual chat UI, not just the API
-directly.
+`RAG_SERVICE_API_KEY` in `.env`, pointed at whatever RAG service you
+connect (no service is bundled by default — see `crates/loop-server/README.md`
+"Swapping in a RAG service" for the interface any RAG system needs to
+speak). There's nothing to connect or toggle from this frontend — the
+model just calls it when it decides to, same as any other tool. Verified
+end-to-end through this actual chat UI (previously against a real deployed
+Cloudflare Worker, since removed in favor of keeping this project
+RAG-provider-agnostic), not just the API directly.
 
 ### `/rag-query`, `/rag-add`, `/rag-list`, `/rag-get` — manual, deterministic shortcuts
 

@@ -331,7 +331,7 @@ async function main() {
 	// Disconnect toggle, meant to augment the prompt before it's sent). That
 	// was never wired to anything real (augmentRagContext() always returned
 	// null) and is now superseded: RAG is a real backend tool instead — see
-	// crates/loop-server/README.md "Tools" and cloudflare-rag/README.md.
+	// crates/loop-server/README.md "Tools" and "Swapping in a RAG service".
 	// The model calls it mid-conversation when it decides to; there's
 	// nothing for this frontend to connect or toggle. The dead
 	// ragUrl/ragConnected/augmentRagContext/__ragAugment code that used to

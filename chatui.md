@@ -4,21 +4,22 @@ A browser-based chat UI for [Loop](README.md)'s `AgentHarness` — the same
 stateful agent the `loop` TUI uses, exposed instead over HTTP/SSE/WebSocket
 to a real web frontend. Built on top of Loop without modifying it: every
 file under `crates/loop-agent`, `crates/loop-ai`, and `crates/loop-cli` is
-untouched. Everything described here lives in three new, separate pieces —
-`crates/loop-server/`, `web/`, and `cloudflare-rag/` — that consume Loop's
-existing public API from the outside.
+untouched. Everything described here lives in two new, separate pieces —
+`crates/loop-server/` and `web/` — that consume Loop's existing public API
+from the outside, plus an optional connection to any RAG (retrieval-
+augmented generation) service you provide.
 
 This document is the system-level overview. Each piece also has its own
 much more detailed README, including the specific bugs hit and fixed along
 the way, live-verification notes, and code-level rationale:
 
-- [`crates/loop-server/README.md`](crates/loop-server/README.md) — the bridge server itself
+- [`crates/loop-server/README.md`](crates/loop-server/README.md) — the bridge server itself, including the RAG interface contract
 - [`web/README.md`](web/README.md) — the chat frontend
-- [`cloudflare-rag/README.md`](cloudflare-rag/README.md) — the RAG service
 
 ## What this actually is
 
-Three cooperating pieces, each independently replaceable:
+Two cooperating pieces, each independently replaceable, plus an optional
+third-party service:
 
 1. **`loop-server`** (Rust) — boots a real `AgentHarness` the same way the
    TUI does, then translates its internal event stream into JSON pushed to
@@ -26,10 +27,12 @@ Three cooperating pieces, each independently replaceable:
 2. **`web/`** (TypeScript, Vite, `pi-web-ui`) — the actual chat interface a
    person uses. Talks to `loop-server` over HTTP/SSE, and to nothing else
    directly.
-3. **`cloudflare-rag/`** (TypeScript, Cloudflare Workers) — a small,
-   real RAG (retrieval-augmented generation) service, standing in until a
-   production RAG system exists. Runs entirely on Cloudflare's edge — zero
-   compute on whatever machine runs `loop-server`.
+3. **A RAG service — not bundled, connected via config.** `loop-server`
+   can talk to any RAG system that implements a small fixed interface
+   (see `crates/loop-server/README.md` "Swapping in a RAG service"). No
+   RAG service ships with this project, and none is required — without one
+   configured, the RAG tool/commands just honestly report that rather than
+   fabricating results.
 
 ## Architecture
 
@@ -45,9 +48,7 @@ flowchart TB
         Shell["Real PTY shell<br/>(portable-pty)"]
     end
 
-    subgraph Cloud["Cloudflare (serverless)"]
-        Worker["loop-rag-worker<br/>(Workers AI + Vectorize + KV)"]
-    end
+    RAG["Your RAG service<br/>(optional, any implementation —<br/>not bundled with this project)"]
 
     LLM["LLM provider<br/>(TensorStudio / Ollama / etc.)"]
 
@@ -56,11 +57,12 @@ flowchart TB
     Harness -->|"tool calls: read/write/edit/bash,<br/>read_document, rag_query"| Harness
     Harness -->|"chat completions"| LLM
     LS -->|"real PTY, spawned in project cwd"| Shell
-    LS -->|"RAG_SERVICE_URL / RAG_SERVICE_API_KEY<br/>POST /query, /ingest, GET /documents"| Worker
+    LS -.->|"RAG_SERVICE_URL / RAG_SERVICE_API_KEY (if configured)<br/>POST /query, /ingest, GET /documents"| RAG
 ```
 
-Two independent network hops leave your machine: `loop-server` → the LLM
-provider (for chat), and `loop-server` → the Cloudflare Worker (for RAG).
+Two independent network hops can leave your machine: `loop-server` → the
+LLM provider (always, for chat), and `loop-server` → your RAG service (only
+if you've configured one — dashed line above, entirely optional).
 Everything else — the terminal, file browsing, the harness itself — runs
 locally.
 
@@ -235,9 +237,9 @@ annotated reference). The pieces most relevant to this bridge:
 LOOP_SERVER_PROVIDER=tensorstudio-litellm   # or "ollama" for a free local model
 LOOP_SERVER_MODEL=qwen3-8-27b
 
-# RAG service (see "The RAG system" below)
-RAG_SERVICE_URL=https://loop-rag-worker.<your-subdomain>.workers.dev
-RAG_SERVICE_API_KEY=<your-key>
+# RAG service (optional — see "The RAG system" below; leave unset for none)
+# RAG_SERVICE_URL=https://your-rag-service.example.com
+# RAG_SERVICE_API_KEY=<your-key>
 
 # Networking
 LOOP_SERVER_PORT=8787
@@ -263,24 +265,23 @@ are in [`crates/loop-server/README.md`](crates/loop-server/README.md#api).
 
 ## The RAG system
 
-**What it is right now**: a from-scratch RAG service
-([`cloudflare-rag/`](cloudflare-rag/README.md)) — real embeddings
-(`@cf/baai/bge-base-en-v1.5`), a real vector database (Cloudflare
-Vectorize), and real generation (`@cf/meta/llama-3.1-8b-instruct-fast`),
-all running on Cloudflare Workers. Retrieval, augmentation, and generation
-are all genuinely happening — it's a real RAG architecture, just a minimal
-custom implementation rather than a named product. Built specifically to
-require zero local or server compute, after an earlier local-Docker
-attempt (self-hosted R2R) crashed the machine it ran on.
+**No RAG service is bundled with this project.** `loop-server` can connect
+to any RAG (retrieval-augmented generation) service you already have or
+build — it's opt-in, configured entirely through two env vars, and
+everything else here works fine with it left unset (the RAG tool/commands
+just honestly say "not configured" instead of fabricating results).
 
-**It's a placeholder, not the destination.** The whole point of the design
-below is that a real, production RAG system can be swapped in later with
-minimal — ideally zero — code changes here.
+An earlier version of this project bundled a real, working test
+implementation — a small Cloudflare Worker (real embeddings, a real vector
+database, real generation, deployed serverlessly) — to have something to
+develop and verify against. It's since been removed: the goal is to
+connect whatever RAG system you actually have, not to default to one
+particular implementation.
 
 ### The interface contract
 
-`loop-server` only knows about one small, fixed shape — nothing
-Cloudflare-specific is hardcoded anywhere in this repo's Rust or
+`loop-server` only knows about one small, fixed shape — nothing about any
+specific RAG provider is hardcoded anywhere in this repo's Rust or
 TypeScript:
 
 | | Request | Response |
@@ -291,15 +292,15 @@ TypeScript:
 Auth: `Authorization: Bearer {RAG_SERVICE_API_KEY}` sent if that env var is
 set.
 
-**To swap in a different RAG system**: change `RAG_SERVICE_URL` /
-`RAG_SERVICE_API_KEY` in `.env`. If the real system already speaks this
-shape, that's the entire migration. If it doesn't (likely — this is a
-convention invented for this project, not a standard), the fix is a thin
-translating adapter in front of it, not editing this code.
+**To connect a RAG system**: set `RAG_SERVICE_URL` (and `RAG_SERVICE_API_KEY`
+if it needs auth) in `.env`. If it already speaks this shape, that's the
+entire integration — zero code changes. If it doesn't (likely — this shape
+is a convention invented for this project, not an industry standard), the
+fix is a thin translating adapter in front of it, not editing this code.
 
 `/rag/documents` and `/rag/documents/:id` (powering `/rag-list`/`/rag-get`)
-are **not** part of this contract — they're specific to `cloudflare-rag`'s
-own KV-backed manifest, since most vector databases (including Vectorize)
-have no native "list everything" or "exact fetch by ID" API. A real RAG
-system may not support an equivalent; those two commands simply won't work
-until it does (or until an adapter fakes that layer too).
+are **not** part of this contract — most vector databases have no native
+"list everything" or "exact fetch by ID" API (pure similarity search
+only), so a RAG service needs its own separate mechanism to support these
+two at all. Many won't; those two commands simply won't work until it does
+(or until an adapter fakes that layer too).

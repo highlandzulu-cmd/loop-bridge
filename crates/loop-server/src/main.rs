@@ -538,13 +538,13 @@ async fn rag_ingest_handler(Json(req): Json<RagIngestRequest>) -> Result<Json<se
 ///
 /// Unlike /rag/query and /rag/ingest, **this pair isn't part of the fixed
 /// RAG interface contract** (see crates/loop-server/README.md "Swapping in
-/// a different RAG service") — it's specific to cloudflare-rag/'s own
-/// /documents and /documents/:id, which exist because Vectorize alone has
-/// no "list everything" or "exact fetch by ID" API (pure similarity search
-/// only). A different RAG service pointed at via RAG_SERVICE_URL may not
-/// implement these at all — that's fine, whatever error it returns (404,
-/// or a connection failure) is relayed as-is rather than these two
-/// pretending to be universal when they aren't.
+/// a RAG service") — most vector databases have no "list everything" or
+/// "exact fetch by ID" API of their own (pure similarity search only), so
+/// a RAG service needs its own separate mechanism to support these two at
+/// all. The RAG service pointed at via RAG_SERVICE_URL may not implement
+/// these at all — that's fine, whatever error it returns (404, or a
+/// connection failure) is relayed as-is rather than these two pretending
+/// to be universal when they aren't.
 async fn rag_documents_handler() -> Result<Json<serde_json::Value>, ApiError> {
     let Ok(rag_url) = std::env::var("RAG_SERVICE_URL") else {
         return Err(api_error(
@@ -979,20 +979,15 @@ fn build_read_document_tool() -> AgentTool {
 /// context injection. Configured via RAG_SERVICE_URL; when unset this
 /// honestly reports that rather than fabricating retrieved content.
 ///
-/// Wired up against a real deployment as of this comment: `cloudflare-rag/`
-/// (see its README) — a small Cloudflare Worker using Workers AI for
-/// embeddings/generation and Vectorize as the vector store, so retrieval
-/// compute runs on Cloudflare's edge, not wherever this bridge is hosted.
-/// It's a test stub standing in until a real RAG system exists, chosen
-/// specifically because it needs zero local/server compute — an earlier
-/// version of this stub ran locally via Docker and crashed the machine it
-/// was on. The request/response shape below (`POST {url}/query`,
-/// `{"query": "..."}` → `{"answer", "matches"}`) matches that Worker;
-/// adjust if pointed at a different RAG service with a different API.
-/// RAG_SERVICE_API_KEY is sent as `Authorization: Bearer <key>` — required
-/// by the Cloudflare Worker (a public URL on a free account, otherwise
-/// open to anyone who finds it); optional here since a different RAG
-/// service might not need it.
+/// No RAG service is bundled with this project — this is deliberately
+/// provider-agnostic. Point RAG_SERVICE_URL at any service that implements
+/// the interface below and it works with zero code changes here; if its
+/// real API differs, put a thin translating adapter in front of it rather
+/// than editing this tool. The request/response shape (`POST {url}/query`,
+/// `{"query": "..."}` → any JSON, `{"answer", "matches"}` renders nicest)
+/// is a convention for this project, not an industry standard.
+/// RAG_SERVICE_API_KEY is sent as `Authorization: Bearer <key>` if set —
+/// optional, since not every RAG service needs auth.
 fn build_rag_query_tool() -> AgentTool {
     AgentTool::simple(
         "rag_query",

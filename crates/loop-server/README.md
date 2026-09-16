@@ -184,13 +184,13 @@ as provisional until that's clarified.
   "chunks_stored", "ingested_at"}`. What `/rag-add` hits. `404` if no
   document has that id.
   **Unlike every other RAG endpoint above, this pair isn't part of the
-  fixed RAG interface contract** (see "Swapping in a different RAG
-  service" below) — `cloudflare-rag/`'s `/documents` and `/documents/:id`
-  exist specifically because Vectorize has no "list everything" or "exact
-  fetch by ID" API of its own (pure similarity search only), so it keeps a
-  separate KV-backed manifest just for these two. A different RAG service
-  may not implement this pair at all; whatever it returns (404, or nothing)
-  is relayed as-is rather than these two pretending to be universal.
+  fixed RAG interface contract** (see "Swapping in a RAG service" below) —
+  most vector databases have no native "list everything" or "exact fetch
+  by ID" API (pure similarity search only), so a RAG service needs its own
+  separate mechanism (e.g. a small manifest alongside its vector store) to
+  support these two at all. Many won't; whatever a RAG service returns for
+  these (404, or nothing) is relayed as-is rather than these two pretending
+  to be universal.
 
 ## Tools
 
@@ -223,29 +223,30 @@ behavior:
 - **`rag_query`** — queries a configurable external RAG (retrieval-augmented
   generation) service for context relevant to a question. Controlled by the
   `RAG_SERVICE_URL` / `RAG_SERVICE_API_KEY` env vars (see `.env.example`):
-  unset by default, in which case the tool tells the model plainly that no
-  RAG service is configured rather than fabricating retrieved content —
-  verified live, the model relayed that message honestly rather than
-  inventing an answer. **Currently wired up to a real deployment**, not
-  just a placeholder: see `cloudflare-rag/` — a small Cloudflare Worker
-  (Workers AI for embeddings/generation, Vectorize for storage) built
-  specifically as a test stub with zero local/server compute, after an
-  earlier local-Docker version of this same stub (Postgres + MinIO + R2R +
-  Ollama) crashed the laptop it ran on. The frontend also has two direct,
-  non-LLM slash commands against the same service — `/rag-query` and
-  `/rag-add` — see `web/README.md`.
+  unset by default — **no RAG service is bundled with this project**, and
+  none is required for anything else here to work. When unset, the tool
+  tells the model plainly that no RAG service is configured rather than
+  fabricating retrieved content — verified live, the model relayed that
+  message honestly rather than inventing an answer. The frontend also has
+  four direct, non-LLM slash commands against the same configured
+  service — `/rag-query`, `/rag-add`, `/rag-list`, `/rag-get` — see
+  `web/README.md`.
+  (An earlier version of this project bundled a real deployed test
+  implementation — a small Cloudflare Worker — as a working example. It's
+  been removed in favor of keeping this project provider-agnostic: connect
+  whatever RAG system you actually have, rather than defaulting to one
+  implementation. The interface it needs to speak is below.)
 
-### Swapping in a different RAG service
+### Swapping in a RAG service
 
 Everything above — the `rag_query` tool, `/rag/query`, `/rag/ingest` — talks
 to whatever `RAG_SERVICE_URL` points at through one fixed, small interface.
-None of this Rust or frontend code hardcodes anything about Cloudflare
-specifically; `cloudflare-rag/` just happens to be the one implementation
-that exists today. **Swapping to a real RAG system means pointing
-`RAG_SERVICE_URL` at something else that implements this same interface —
-zero code changes here, unless that service's actual API differs, in which
-case put a small translating adapter in front of it rather than editing
-this code.**
+None of this Rust or frontend code hardcodes anything about any specific
+RAG provider — **connecting a RAG system means pointing `RAG_SERVICE_URL`
+(and `RAG_SERVICE_API_KEY`, if it needs auth) at whatever implements this
+interface — zero code changes here**, unless that service's actual API
+differs from the shape below, in which case put a small translating
+adapter in front of it rather than editing this code.
 
 The interface, in full:
 

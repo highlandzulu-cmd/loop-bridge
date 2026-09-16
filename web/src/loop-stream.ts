@@ -292,10 +292,10 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 							if (!res.ok) {
 								throw new Error(body?.error ?? `RAG ingest failed (HTTP ${res.status})`);
 							}
-							// doc_id/chunks_stored are cloudflare-rag's own response fields, not
-							// a fixed spec (see crates/loop-server/README.md "RAG interface
-							// contract") — a different RAG service's /ingest may omit them, so
-							// this falls back to the raw response rather than printing "undefined".
+							// doc_id/chunks_stored render nicest but aren't a fixed spec (see
+							// crates/loop-server/README.md "Swapping in a RAG service") — the
+							// configured RAG service's /ingest may omit them, so this falls
+							// back to the raw response rather than printing "undefined".
 							const text =
 								typeof body.doc_id === "string" && typeof body.chunks_stored === "number"
 									? `Ingested \`${path}\` as \`${body.doc_id}\` (${body.chunks_stored} chunk${body.chunks_stored === 1 ? "" : "s"}).`
@@ -304,9 +304,9 @@ export function createLoopStreamFn(opts: LoopStreamFnOptions) {
 							tagLastAssistantMessageAsToolResult("rag-add");
 						} else if (listMatch) {
 							// /rag/documents isn't part of the fixed RAG interface contract
-							// (crates/loop-server/README.md "Swapping in a different RAG
-							// service") — it's specific to cloudflare-rag's own manifest, so
-							// this degrades to raw JSON if a different service's response
+							// (crates/loop-server/README.md "Swapping in a RAG service") —
+							// most vector databases have no native "list everything" API, so
+							// this degrades to raw JSON if the configured service's response
 							// doesn't look like { documents: [...] }.
 							const res = await fetch(`${opts.baseUrl}/rag/documents`);
 							const body = await res.json();
