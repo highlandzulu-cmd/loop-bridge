@@ -23,7 +23,6 @@ use tokio::sync::broadcast;
 
 use loop_agent::harness::{AgentHarness, AgentHarnessPhase, HostExecutionEnv};
 use loop_agent::{AgentEvent, AgentTool, AgentToolResult};
-use loop_ai::providers::{faux_provider, FauxResponse, FauxScript};
 use loop_app_core::runtime::{bootstrap, BootstrapOpts};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -117,8 +116,9 @@ async fn main() -> anyhow::Result<()> {
     // Which provider/model to run against. Defaults to whatever is already
     // configured in ~/.loop/agent/settings.json (Soket by default). Override
     // with LOOP_SERVER_PROVIDER / LOOP_SERVER_MODEL to point at a keyless
-    // local provider (e.g. a custom "ollama" entry in ~/.loop/agent/models.json)
-    // or the built-in faux provider for wiring tests.
+    // local provider instead (e.g. a custom "ollama" entry in
+    // ~/.loop/agent/models.json). Always a real provider — no scripted/faux
+    // fallback exists in this bridge.
     let provider = std::env::var("LOOP_SERVER_PROVIDER").ok();
     let model = std::env::var("LOOP_SERVER_MODEL").ok();
     let cwd = std::env::current_dir()?;
@@ -195,26 +195,6 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     std::fs::write(&session_file, &runtime.session_id)?;
-
-    // Opt-in offline mode: swap in a scripted, zero-network "faux" model so
-    // the whole bridge (harness -> events -> SSE -> browser) can be verified
-    // without depending on a real model being reachable. Not for real use.
-    if std::env::var("LOOP_SERVER_FAUX").as_deref() == Ok("1") {
-        let script = FauxScript::new();
-        script.push(FauxResponse::Text(
-            "Hello from the faux model. If you can see this, the bridge \
-             (Loop harness -> loop-server -> browser) is wired correctly \
-             end to end — this reply is scripted, not real inference."
-                .into(),
-        ));
-        runtime.models.set_provider(faux_provider(script));
-        let faux_model = runtime
-            .models
-            .get_model("faux", "faux-model")
-            .expect("faux provider registers faux-model");
-        runtime.harness.set_model(faux_model).await;
-        tracing::warn!("LOOP_SERVER_FAUX=1 — responses are scripted, not real inference");
-    }
 
     // Register our two extra tools alongside the standard 4 (read/write/edit/
     // bash). set_tools() *replaces* the whole list, so the base 4 have to be

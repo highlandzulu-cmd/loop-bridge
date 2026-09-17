@@ -15,7 +15,6 @@ path = "src/main.rs"
 # see this crate's README ("How this connects to the harness") for why
 # these are git dependencies pinned to a specific commit rather than
 # path dependencies or a tracked branch.
-loop-ai = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-ai" }
 loop-agent = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-agent" }
 loop-app-core = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-app-core" }
 

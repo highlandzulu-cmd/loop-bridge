@@ -1782,7 +1782,6 @@ dependencies = [
  "axum 0.7.9",
  "futures",
  "loop-agent",
- "loop-ai",
  "loop-app-core",
  "pdf-extract",
  "portable-pty",

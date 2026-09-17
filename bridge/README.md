@@ -76,7 +76,6 @@ explanations). Quick reference:
 | `LOOP_SERVER_SESSION_FILE` | `.loop-server-session-id` | Where the session id is persisted so history survives a restart |
 | `LOOP_SERVER_PORT` | `8787` | Port to listen on |
 | `LOOP_SERVER_CORS_ORIGIN` | `http://localhost:5173` | Only this origin may call the API — must match wherever the frontend is actually served from |
-| `LOOP_SERVER_FAUX` | `0` | Set to `1` to use Loop's built-in scripted provider instead of a real model — for testing the bridge/frontend wiring itself without needing a model at all |
 
 ### Running against a free local model instead of a paid API
 
