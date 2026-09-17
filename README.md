@@ -45,8 +45,8 @@ granted to anyone — clone this repo and `cargo build` just works.
 ## Quick start (all three, locally)
 
 ```bash
-git clone https://github.com/highlandzulu-cmd/loop-bridge
-cd loop-bridge
+git clone https://github.com/highlandzulu-cmd/loop-bridge-and-ui
+cd loop-bridge-and-ui
 cp .env.example .env       # bridge config — at minimum pick a model provider
 ./scripts/dev.sh           # builds + runs bridge/ and web/ together
 ```
