@@ -1,7 +1,0 @@
-# loop-harness (this crate's git dependency, see bridge/Cargo.toml) is a
-# private repo. Cargo's default libgit2-based git fetcher can't use the gh
-# CLI's git credential helper, so it fails to authenticate; shelling out to
-# the system `git` binary instead does work, since that's already
-# authenticated (same as any other `git clone`/`git pull` against it).
-[net]
-git-fetch-with-cli = true

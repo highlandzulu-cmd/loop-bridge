@@ -24,7 +24,7 @@ use tokio::sync::broadcast;
 use loop_agent::harness::{AgentHarness, AgentHarnessPhase, HostExecutionEnv};
 use loop_agent::{AgentEvent, AgentTool, AgentToolResult};
 use loop_ai::providers::{faux_provider, FauxResponse, FauxScript};
-use loop_cli::runtime::{bootstrap, BootstrapOpts};
+use loop_app_core::runtime::{bootstrap, BootstrapOpts};
 use tower_http::cors::{Any, CorsLayer};
 
 /// Broadcast capacity: comfortably more than one turn's worth of events
@@ -145,20 +145,21 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("booting AgentHarness (provider={provider:?}, model={model:?}, cwd={cwd:?})");
 
-    // Loop's harness itself (loop-agent, loop-ai) and loop-cli's runtime are
-    // used completely unmodified here — deliberately, so this bridge stays a
-    // separate, swappable consumer of Loop rather than a fork of it. The two
-    // steps below exist entirely in this crate for that reason, working
-    // around real headless-server landmines in bootstrap() purely through
-    // its existing public API (TrustStore, BootstrapOpts), no source changes:
+    // Loop's harness itself (loop-agent, loop-ai) and loop-app-core's shared
+    // bootstrap/runtime are used completely unmodified here — deliberately,
+    // so this bridge stays a separate, swappable consumer of Loop rather
+    // than a fork of it. The two steps below exist entirely in this crate
+    // for that reason, working around real headless-server landmines in
+    // bootstrap() purely through its existing public API (TrustStore,
+    // BootstrapOpts), no source changes:
     //
     // 1. bootstrap(interactive: false) — the only other option — bails with
     //    a hard error unless a Soket-shaped key (SOKET_API_KEY /
     //    TENSORSTUDIO_API_KEY / LOOP_API_KEY) is present, even when a
     //    completely different provider (e.g. Ollama) is configured instead.
     //    interactive: true avoids that bail. Verified against the source
-    //    (loop-cli's src/runtime.rs, ensure_soket_api_key, in the
-    //    loop-harness repo this crate depends on): the
+    //    (loop-app-core's src/runtime.rs, ensure_soket_api_key, in the
+    //    upstream soketlabs/loop repo this crate depends on): the
     //    "interactive" branch just returns Ok(true) and defers actual
     //    prompting to TUI code this process never calls — so it can't hang
     //    on that path by itself.
@@ -171,7 +172,7 @@ async fn main() -> anyhow::Result<()> {
     //    makes resolve_trust's cache check short-circuit before ever
     //    reaching that prompt.
     {
-        use loop_cli::config::{get_agent_dir, trust_path, TrustStore};
+        use loop_app_core::config::{get_agent_dir, trust_path, TrustStore};
         let agent_dir = get_agent_dir();
         let mut trust = TrustStore::load(trust_path(&agent_dir))?;
         if trust.get(&cwd).is_none() {
@@ -223,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
     // set rather than duplicating its logic.
     {
         let host_env: Arc<dyn loop_agent::harness::ExecutionEnv> = Arc::new(HostExecutionEnv::new(cwd.clone()));
-        let mut tools = loop_cli::runtime::build_tools(host_env);
+        let mut tools = loop_app_core::runtime::build_tools(host_env);
         let tool_count_before = tools.len();
         tools.push(build_read_document_tool());
         tools.push(build_rag_query_tool());

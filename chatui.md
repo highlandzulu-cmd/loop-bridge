@@ -2,11 +2,11 @@
 
 A browser-based chat UI for Loop's `AgentHarness` — the same stateful agent
 the `loop` TUI uses, exposed instead over HTTP/SSE/WebSocket to a real web
-frontend. Built on top of Loop without modifying it, and — since the harness
-and this bridge are now separate repos entirely — without even being able
-to: every file under `loop-agent`, `loop-ai`, and `loop-cli` lives in the
-[`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) repo,
-pulled in here as an ordinary Cargo git dependency, not vendored or copied.
+frontend. Built on top of Loop without modifying it, and without even being
+able to: every file under `loop-agent`, `loop-ai`, and `loop-app-core` lives
+in the real upstream [`soketlabs/loop`](https://github.com/soketlabs/loop)
+project, pulled in here as an ordinary Cargo git dependency (pinned to a
+specific commit), not vendored, copied, or forked.
 
 Everything described here lives in two sibling pieces in *this* repo —
 [`bridge/`](bridge/README.md) and [`web/`](web/README.md) — that consume
@@ -19,17 +19,21 @@ Three independently-runnable pieces, three trust/deploy boundaries:
 
 | Repo/folder | What | Depends on the others via |
 |---|---|---|
-| [`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) (separate repo) | The agent itself — `AgentHarness`, tools, LLM API, the `loop` CLI | nothing here |
-| [`bridge/`](bridge/README.md) (this repo) | HTTP/SSE/WebSocket server exposing the harness | a Cargo **git dependency** on `loop-harness` |
+| [`soketlabs/loop`](https://github.com/soketlabs/loop) (upstream, not ours) | The agent itself — `AgentHarness`, tools, LLM API, the `loop` CLI | nothing here |
+| [`bridge/`](bridge/README.md) (this repo) | HTTP/SSE/WebSocket server exposing the harness | a Cargo **git dependency** on `soketlabs/loop`, pinned to a commit |
 | [`web/`](web/README.md) (this repo) | The actual browser chat UI | the bridge's HTTP API, at a configurable URL |
+
+`soketlabs/loop` is a public repo — this dependency needs no credentials
+and works for anyone who clones this repo, unlike an earlier version of
+this project which depended on a private mirror we maintained ourselves.
 
 This document is the system-level overview. Each piece also has its own
 much more detailed README, including the specific bugs hit and fixed along
 the way, live-verification notes, and code-level rationale:
 
-- [`bridge/README.md`](bridge/README.md) — the bridge server itself, including the RAG interface contract and how it connects to `loop-harness`
+- [`bridge/README.md`](bridge/README.md) — the bridge server itself, including the RAG interface contract and how it connects to the harness
 - [`web/README.md`](web/README.md) — the chat frontend, including how it connects to the bridge
-- [`loop-harness`'s own README](https://github.com/highlandzulu-cmd/loop-harness) — the harness itself, and how *any* host (not just this bridge) can depend on it
+- [`soketlabs/loop`'s own README](https://github.com/soketlabs/loop) — the harness itself
 
 ## What this actually is
 
@@ -198,7 +202,7 @@ The model has 6 real tools it can invoke on its own:
 
 | Tool | What it does |
 |---|---|
-| `read`, `write`, `edit`, `bash` | Loop's standard 4 (unmodified, from `loop_cli::runtime::build_tools`) |
+| `read`, `write`, `edit`, `bash` | Loop's standard 4 (unmodified, from `loop_app_core::runtime::build_tools`) |
 | `read_document` | Reads a PDF or text file already on disk, real extraction via `pdf-extract` |
 | `rag_query` | Queries the configured RAG service for context |
 

@@ -21,29 +21,32 @@ for the frontend side of this.
 ## How this connects to the harness
 
 `AgentHarness` (and the `bootstrap()`/`build_tools()` this process calls to
-boot one) doesn't live in this repo — it's in the separate
-[`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) repo,
-pulled in as an ordinary Cargo git dependency (see `Cargo.toml`):
+boot one) doesn't live in this repo — it's in the real upstream
+[`soketlabs/loop`](https://github.com/soketlabs/loop) project, pulled in as
+an ordinary Cargo git dependency (see `Cargo.toml`):
 
 ```toml
-loop-ai = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-ai" }
-loop-agent = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-agent" }
-loop-cli = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-cli" }
+loop-ai = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-ai" }
+loop-agent = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-agent" }
+loop-app-core = { git = "https://github.com/soketlabs/loop", rev = "677556d6fb8fd7199547bad38880a975c5edb872", package = "loop-app-core" }
 ```
 
-Because `loop-harness` is a private repo, Cargo's default git transport
-(libgit2) can't authenticate against it — `.cargo/config.toml` at this
-repo's root sets `net.git-fetch-with-cli = true` so Cargo shells out to the
-system `git` instead, which already works (same credential helper as any
-other `git clone`/`git pull` against that repo). If `cargo build` here ever
-fails with a git authentication error, that file is the first thing to
-check — either it's missing, or you don't have `git` access to
-`loop-harness` yet.
+`bootstrap`/`build_tools`/the config helpers this crate uses (`get_agent_dir`,
+`trust_path`, `TrustStore`) don't live in `loop-cli` upstream — they moved
+into a shared `loop-app-core` crate at some point (so both `loop-cli` and a
+newer desktop app can reuse them), which is why this depends on
+`loop-app-core` instead of `loop-cli`. Verified by reading upstream's
+`crates/loop-app-core/src/runtime.rs` and `src/config/` directly, not
+assumed from a version number.
 
-These three deps currently track `loop-harness`'s default branch. Pin to a
-`tag = "..."` or `rev = "..."` instead once this is more than a local dev
-setup — see `loop-harness`'s own README ("Connecting a bridge or other
-host") for why.
+`soketlabs/loop` is a public repo, so this needs no auth of any kind —
+`cargo build` resolves it the same way it resolves any crates.io dependency,
+for anyone, with zero setup. Pinned to a specific `rev` rather than tracking
+a branch, deliberately: upstream evolves independently of this bridge (it's
+already meaningfully ahead of the commit pinned here), and an unpinned
+dependency means a routine `cargo update` could silently pull in an API
+change this bridge hasn't been ported to yet. Bump the `rev` (and fix
+whatever that breaks) as a deliberate choice, not an accident.
 
 ## Running it
 
@@ -222,7 +225,7 @@ as provisional until that's clarified.
 ## Tools
 
 Besides Loop's standard 4 tools (`read`/`write`/`edit`/`bash`, built by
-`loop_cli::runtime::build_tools` and unchanged here), this bridge registers
+`loop_app_core::runtime::build_tools` and unchanged here), this bridge registers
 two more via `AgentHarness::set_tools()` at startup (see `main()` in
 `src/main.rs` — the log line `registered 6 tools (4 standard +
 read_document + rag_query)` confirms all six loaded). Both are real,
