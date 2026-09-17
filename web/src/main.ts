@@ -19,8 +19,12 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { createLoopStreamFn } from "./loop-stream.js";
 
-// Bridge URL — the Rust loop-server from crates/loop-server.
-const LOOP_SERVER_URL = "http://127.0.0.1:8787";
+// Bridge URL — the Rust loop-server bridge, normally a sibling `bridge/`
+// folder in this same repo, but this is the one thing that has to be
+// configurable: the bridge doesn't have to run on this machine. Override
+// via VITE_LOOP_SERVER_URL in web/.env (see web/.env.example) if it's
+// running elsewhere; defaults to the same-machine dev setup.
+const LOOP_SERVER_URL = import.meta.env.VITE_LOOP_SERVER_URL || "http://127.0.0.1:8787";
 
 // Placeholder Model purely for display (name, cost formatting) in the UI.
 // The real model choice lives entirely on the Loop/Rust side; this value is
@@ -331,7 +335,7 @@ async function main() {
 	// Disconnect toggle, meant to augment the prompt before it's sent). That
 	// was never wired to anything real (augmentRagContext() always returned
 	// null) and is now superseded: RAG is a real backend tool instead — see
-	// crates/loop-server/README.md "Tools" and "Swapping in a RAG service".
+	// ../bridge/README.md "Tools" and "Swapping in a RAG service".
 	// The model calls it mid-conversation when it decides to; there's
 	// nothing for this frontend to connect or toggle. The dead
 	// ragUrl/ragConnected/augmentRagContext/__ragAugment code that used to

@@ -1,88 +1,83 @@
-# loop
+# loop-bridge
 
-Production-grade AI harness in Rust by **Soket AI**: unified LLM API, stateful agent, and interactive coding CLI.
+A browser chat UI for [Loop](https://github.com/highlandzulu-cmd/loop-harness)'s
+`AgentHarness` — the same stateful agent the `loop` TUI uses, exposed
+instead over HTTP/SSE/WebSocket to a web frontend. Two independent, sibling
+pieces in this repo, plus the harness itself in a separate repo:
 
-## Crates
+| Piece | Where | Role |
+|---|---|---|
+| **the harness** | separate repo: [`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) | `AgentHarness` (Rust), unmodified — the actual agent loop, tools, LLM API |
+| **the bridge** | [`bridge/`](bridge/README.md) (this repo) | HTTP/SSE/WebSocket server exposing that harness to a browser |
+| **the frontend** | [`web/`](web/README.md) (this repo) | The chat UI a person actually uses, talking to the bridge |
 
-| Crate | Path | Role |
-|-------|------|------|
-| **loop-ai** | [`crates/loop-ai`](crates/loop-ai) | Unified LLM API, Soket provider (`/v1/models` refresh), OpenAI-compat + faux |
-| **loop-agent** | [`crates/loop-agent`](crates/loop-agent) | Agent loop, AgentHarness, tools, sessions, sandbox, skills |
-| **loop-cli** | [`crates/loop-cli`](crates/loop-cli) | Interactive `loop` TUI (ratatui) |
-| **loop-server** | [`crates/loop-server`](crates/loop-server/README.md) | HTTP/SSE bridge exposing `AgentHarness` to a web frontend, instead of the TUI |
+Each piece is independently runnable and independently replaceable — the
+bridge only depends on the harness through its public Cargo API (a git
+dependency, not a copy), and the frontend only depends on the bridge
+through its HTTP API (a configurable URL, not a build-time link). See
+**[`chatui.md`](chatui.md) for the full system overview** (architecture
+diagram, request lifecycle, RAG integration) — this file and the two
+per-piece READMEs go deeper on each one.
 
-Plus [`web/`](web/README.md) — a browser chat UI (`pi-web-ui`) that talks to `loop-server`. Together, `loop-server` + `web/` are a second way to use the same unmodified harness the TUI uses, with an optional retrieval-augmented generation layer — `loop-server` can connect to any RAG service you provide, see `crates/loop-server/README.md`. **See [`chatui.md`](chatui.md) for the full system overview** (architecture diagram, features, API reference, RAG integration contract) — the individual READMEs go deeper on each piece.
+## How the three pieces connect
 
-## Quick start
+- **bridge → harness**: `bridge/Cargo.toml` depends on `loop-agent`/
+  `loop-ai`/`loop-cli` as an ordinary Cargo **git dependency** against
+  `loop-harness`, resolved automatically on `cargo build` — no manual
+  step, no local checkout needed. See
+  [`bridge/README.md`](bridge/README.md#how-this-connects-to-the-harness)
+  for how that's authenticated (it's a private repo) and how to pin a
+  specific version instead of tracking a branch.
+- **web → bridge**: the frontend is a static site that talks to the
+  bridge over plain HTTP/SSE at a configurable URL
+  (`VITE_LOOP_SERVER_URL`), with the bridge's `LOOP_SERVER_CORS_ORIGIN`
+  pointed back at wherever the frontend is served from. See
+  [`web/README.md`](web/README.md#connecting-this-to-a-bridge) for both
+  sides of that.
+
+Nothing here requires all three pieces to live on the same machine, or in
+the same repo — that's the point of splitting them this way.
+
+## Quick start (all three, locally)
 
 ```bash
+git clone https://github.com/highlandzulu-cmd/loop-bridge
+cd loop-bridge
+cp .env.example .env       # bridge config — at minimum pick a model provider
+./scripts/dev.sh           # builds + runs bridge/ and web/ together
+```
+
+Opens on `http://localhost:5173`. `cargo build` resolves `loop-harness`
+automatically as a git dependency the first time — see
+[`bridge/README.md`](bridge/README.md) if that step fails (most likely
+cause: no `git` access to the private `loop-harness` repo yet).
+
+To run just one piece:
+
+```bash
+cargo run -p loop-server   # bridge only, port 8787
+cd web && npm install && npm run dev   # frontend only, port 5173
+```
+
+## Just the harness (no bridge, no browser)
+
+The harness has its own CLI and doesn't need any of this:
+
+```bash
+git clone https://github.com/highlandzulu-cmd/loop-harness
+cd loop-harness
 cargo run -p loop-cli
 ```
 
-First run prompts for a Soket API key (or set `SOKET_API_KEY` / `TENSORSTUDIO_API_KEY` / `LOOP_API_KEY`). Config lives under `~/.loop/agent/`. See [`crates/loop-cli/README.md`](crates/loop-cli/README.md).
+See that repo's README for building on top of it as a library — that's
+exactly what `bridge/` does.
 
-### Browser UI instead of the TUI
-
-```bash
-./scripts/dev.sh
-```
-
-Builds and starts `loop-server` + `web/` together, opens on
-`http://localhost:5173`. Copy [`.env.example`](.env.example) to `.env` first
-to point it at a free local model via Ollama instead of Soket — see
-[`crates/loop-server/README.md`](crates/loop-server/README.md) for details.
-
-## Build / test
+## Build / test (this repo)
 
 ```bash
-cargo build
-cargo test -p loop-ai
-cargo test -p loop-agent
-cargo test -p loop-cli
+cargo build -p loop-server
+cd web && npx tsc --noEmit
 ```
 
-### CI vs releases
-
-- **CI** (`.github/workflows/ci.yml`) runs on every PR and push to `main`, plus manual **Run workflow**. It builds and tests; it does **not** publish a release.
-- **Release** (`.github/workflows/release.yml`) publishes multi-platform binaries only when you cut a version tag (or manually with `create_release`).
-
-Supported release targets:
-
-| Asset | Platform |
-|-------|----------|
-| `loop-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 |
-| `loop-aarch64-unknown-linux-gnu.tar.gz` | Linux ARM64 |
-| `loop-x86_64-apple-darwin.tar.gz` | macOS Intel |
-| `loop-aarch64-apple-darwin.tar.gz` | macOS Apple Silicon |
-| `loop-x86_64-pc-windows-msvc.zip` | Windows x64 |
-
-#### Cut a release
-
-1. Bump `[workspace.package] version` in the root `Cargo.toml` (must match the tag without the `v` prefix).
-2. Commit, push to `main` (or your release branch).
-3. Tag and push the tag:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-That starts the Release workflow, builds all targets, and creates a GitHub Release with archives + `.sha256` checksums.
-
-#### Build artifacts without releasing
-
-In GitHub: **Actions → Release → Run workflow**, leave **create_release** unchecked. Binaries are uploaded as workflow artifacts only.
-
-Live OpenAI-compatible tests (ignored by default):
-
-```bash
-LOOP_TEST_BASE_URL="https://api.tensorstudio.ai/v1" \
-LOOP_TEST_MODEL="qwen3-30b" \
-LOOP_TEST_API_KEY_ENV="OPENAI_API_KEY" \
-cargo test -p loop-ai --test live_openai_compat -- --ignored --nocapture
-
-LOOP_TEST_BASE_URL="https://api.tensorstudio.ai/v1" \
-LOOP_TEST_MODEL="qwen3-30b" \
-LOOP_TEST_API_KEY_ENV="OPENAI_API_KEY" \
-cargo test -p loop-agent --test live_agent -- --ignored --nocapture
-```
+Harness-level tests (`loop-ai`, `loop-agent`, `loop-cli`) live in and run
+from the `loop-harness` repo, not here.

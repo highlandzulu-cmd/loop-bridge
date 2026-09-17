@@ -1,6 +1,6 @@
 # web (loop-web)
 
-Browser chat UI for [`loop-server`](../crates/loop-server/README.md), built
+Browser chat UI for [`loop-server`](../bridge/README.md), built
 on [`pi-web-ui`](https://www.npmjs.com/package/@mariozechner/pi-web-ui) /
 `pi-agent-core`. This app does no thinking and has no tools of its own —
 it's a renderer. Every real action (running a shell command, editing a
@@ -50,10 +50,10 @@ wired to anything real (`augmentRagContext()` in `main.ts` always returned
 than left implying a mechanism that isn't real.
 
 RAG is real now, but entirely on the backend: `rag_query` (see
-`crates/loop-server/README.md` "Tools") is a tool the *model* can choose to
+`bridge/README.md` "Tools") is a tool the *model* can choose to
 call mid-conversation, configured server-side via `RAG_SERVICE_URL` /
 `RAG_SERVICE_API_KEY` in `.env`, pointed at whatever RAG service you
-connect (no service is bundled by default — see `crates/loop-server/README.md`
+connect (no service is bundled by default — see `bridge/README.md`
 "Swapping in a RAG service" for the interface any RAG system needs to
 speak). There's nothing to connect or toggle from this frontend — the
 model just calls it when it decides to, same as any other tool. Verified
@@ -252,6 +252,29 @@ npm run dev
 Opens on `http://localhost:5173`. That origin has to match
 `loop-server`'s `LOOP_SERVER_CORS_ORIGIN` or requests are blocked by CORS —
 they match by default, only relevant if you change one.
+
+## Connecting this to a bridge
+
+This app and `loop-server` are separate, independently deployable pieces —
+this one is a static site with no server-side code of its own, so it can
+run anywhere (or nowhere but a laptop) regardless of where the bridge runs.
+The bridge's URL is the one thing that has to be configured:
+
+```bash
+cp .env.example .env   # then edit VITE_LOOP_SERVER_URL
+```
+
+`VITE_LOOP_SERVER_URL` (read in `src/main.ts`) defaults to
+`http://127.0.0.1:8787` — right for local dev with both pieces on the same
+machine. Point it at wherever `loop-server` actually runs otherwise. Two
+things have to agree for this to actually work end to end:
+
+1. This value has to be a URL the browser can reach `loop-server` at.
+2. `loop-server`'s own `LOOP_SERVER_CORS_ORIGIN` (see `../bridge/README.md`)
+   has to match the origin this app is served from — not the bridge URL
+   above, the *other* direction. Mismatch either way shows up as a failed
+   `/health` check on load (sidebar shows "unknown") or a blocked `/prompt`
+   request in the browser console, not a silent failure.
 
 ## How it's wired together
 

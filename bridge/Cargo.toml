@@ -1,0 +1,34 @@
+[package]
+name = "loop-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "HTTP/SSE bridge exposing AgentHarness to a web frontend"
+
+[[bin]]
+name = "loop-server"
+path = "src/main.rs"
+
+[dependencies]
+# The harness this bridges to lives in a separate repo — see this crate's
+# README ("How this connects to the harness") for why these are git
+# dependencies instead of path dependencies, and for pinning advice.
+loop-ai = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-ai" }
+loop-agent = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-agent" }
+loop-cli = { git = "https://github.com/highlandzulu-cmd/loop-harness", package = "loop-cli" }
+
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["cors"] }
+portable-pty = "0.8"
+pdf-extract = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util", "net", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-stream = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

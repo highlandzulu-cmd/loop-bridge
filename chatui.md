@@ -1,35 +1,51 @@
 # The Loop Bridge
 
-A browser-based chat UI for [Loop](README.md)'s `AgentHarness` — the same
-stateful agent the `loop` TUI uses, exposed instead over HTTP/SSE/WebSocket
-to a real web frontend. Built on top of Loop without modifying it: every
-file under `crates/loop-agent`, `crates/loop-ai`, and `crates/loop-cli` is
-untouched. Everything described here lives in two new, separate pieces —
-`crates/loop-server/` and `web/` — that consume Loop's existing public API
-from the outside, plus an optional connection to any RAG (retrieval-
-augmented generation) service you provide.
+A browser-based chat UI for Loop's `AgentHarness` — the same stateful agent
+the `loop` TUI uses, exposed instead over HTTP/SSE/WebSocket to a real web
+frontend. Built on top of Loop without modifying it, and — since the harness
+and this bridge are now separate repos entirely — without even being able
+to: every file under `loop-agent`, `loop-ai`, and `loop-cli` lives in the
+[`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) repo,
+pulled in here as an ordinary Cargo git dependency, not vendored or copied.
+
+Everything described here lives in two sibling pieces in *this* repo —
+[`bridge/`](bridge/README.md) and [`web/`](web/README.md) — that consume
+the harness's existing public API from the outside, plus an optional
+connection to any RAG (retrieval-augmented generation) service you provide.
+
+## Repository layout
+
+Three independently-runnable pieces, three trust/deploy boundaries:
+
+| Repo/folder | What | Depends on the others via |
+|---|---|---|
+| [`loop-harness`](https://github.com/highlandzulu-cmd/loop-harness) (separate repo) | The agent itself — `AgentHarness`, tools, LLM API, the `loop` CLI | nothing here |
+| [`bridge/`](bridge/README.md) (this repo) | HTTP/SSE/WebSocket server exposing the harness | a Cargo **git dependency** on `loop-harness` |
+| [`web/`](web/README.md) (this repo) | The actual browser chat UI | the bridge's HTTP API, at a configurable URL |
 
 This document is the system-level overview. Each piece also has its own
 much more detailed README, including the specific bugs hit and fixed along
 the way, live-verification notes, and code-level rationale:
 
-- [`crates/loop-server/README.md`](crates/loop-server/README.md) — the bridge server itself, including the RAG interface contract
-- [`web/README.md`](web/README.md) — the chat frontend
+- [`bridge/README.md`](bridge/README.md) — the bridge server itself, including the RAG interface contract and how it connects to `loop-harness`
+- [`web/README.md`](web/README.md) — the chat frontend, including how it connects to the bridge
+- [`loop-harness`'s own README](https://github.com/highlandzulu-cmd/loop-harness) — the harness itself, and how *any* host (not just this bridge) can depend on it
 
 ## What this actually is
 
-Two cooperating pieces, each independently replaceable, plus an optional
-third-party service:
+Two cooperating pieces in this repo, each independently replaceable, plus
+an optional third-party service:
 
-1. **`loop-server`** (Rust) — boots a real `AgentHarness` the same way the
-   TUI does, then translates its internal event stream into JSON pushed to
-   a browser. No thinking of its own; a pure protocol bridge.
+1. **`bridge/`** (Rust, package name `loop-server`) — boots a real
+   `AgentHarness` the same way the TUI does, then translates its internal
+   event stream into JSON pushed to a browser. No thinking of its own; a
+   pure protocol bridge.
 2. **`web/`** (TypeScript, Vite, `pi-web-ui`) — the actual chat interface a
-   person uses. Talks to `loop-server` over HTTP/SSE, and to nothing else
+   person uses. Talks to the bridge over HTTP/SSE, and to nothing else
    directly.
-3. **A RAG service — not bundled, connected via config.** `loop-server`
+3. **A RAG service — not bundled, connected via config.** The bridge
    can talk to any RAG system that implements a small fixed interface
-   (see `crates/loop-server/README.md` "Swapping in a RAG service"). No
+   (see `bridge/README.md` "Swapping in a RAG service"). No
    RAG service ships with this project, and none is required — without one
    configured, the RAG tool/commands just honestly report that rather than
    fabricating results.
@@ -261,7 +277,7 @@ LOOP_SERVER_CORS_ORIGIN=http://localhost:5173
 | `GET` | `/rag/documents/:id` | Exact document text (`/rag-get`) |
 
 Full request/response shapes, status codes, and the reasoning behind each
-are in [`crates/loop-server/README.md`](crates/loop-server/README.md#api).
+are in [`bridge/README.md`](bridge/README.md#api).
 
 ## The RAG system
 
