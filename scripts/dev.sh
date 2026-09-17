@@ -46,6 +46,24 @@ if [ ! -d web/node_modules ]; then
 	(cd web && npm install)
 fi
 
+# The frontend origin the bridge will allow — must match wherever Vite
+# actually ends up running. Checked *before* starting anything: if this
+# port is already taken, Vite silently picks a different one (e.g. 5174),
+# the bridge still only allows 5173, and every message then fails in the
+# browser with a generic, hard-to-diagnose "Failed to fetch" — CORS
+# blocking a cross-origin request, not a real crash anywhere. Catching it
+# here, with a clear message, beats debugging that after the fact.
+WEB_PORT="${LOOP_SERVER_CORS_ORIGIN##*:}"
+WEB_PORT="${WEB_PORT:-5173}"
+if lsof -i ":${WEB_PORT}" >/dev/null 2>&1; then
+	echo "error: port ${WEB_PORT} is already in use by something else." >&2
+	echo "       Vite would silently move to a different port, which breaks CORS" >&2
+	echo "       against this bridge. Free port ${WEB_PORT} first (lsof -i :${WEB_PORT}" >&2
+	echo "       to see what's using it), or set LOOP_SERVER_CORS_ORIGIN in .env to" >&2
+	echo "       match whatever port you actually want to use." >&2
+	exit 1
+fi
+
 echo "==> Building loop-server..."
 cargo build -p loop-server
 
@@ -66,7 +84,12 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "==> Starting loop-server on http://127.0.0.1:${LOOP_SERVER_PORT:-8787}..."
-./target/debug/loop-server &
+# RUST_LOG defaults to showing nothing at all — which looks identical to a
+# hang or a crash from a blank terminal. Default to "info" here (unless the
+# caller already set RUST_LOG) so the real boot sequence (booting
+# AgentHarness / registered N tools / harness ready) is actually visible,
+# not silent.
+RUST_LOG="${RUST_LOG:-info}" ./target/debug/loop-server &
 PIDS+=($!)
 
 # Give loop-server a moment to bind before the frontend's first request —
