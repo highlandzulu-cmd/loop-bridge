@@ -106,6 +106,63 @@ fn load_dotenv() {
     }
 }
 
+/// Refuses to boot with an unrecognized provider instead of letting it
+/// silently become "soket" (see the call site's comment for the real
+/// failure mode this catches). `configured_provider` is `None` when
+/// LOOP_SERVER_PROVIDER is unset, in which case the *effective* provider is
+/// whatever ~/.loop/agent/settings.json says (or "soket" if that file
+/// doesn't exist either — the harness's own ultimate default), so that's
+/// resolved and checked the same way.
+fn validate_provider_registered(configured_provider: Option<&str>) -> anyhow::Result<()> {
+    const BUILTIN_PROVIDERS: &[&str] = &["soket", "faux"];
+
+    let agent_dir = loop_app_core::config::get_agent_dir();
+
+    let effective_provider = match configured_provider {
+        Some(p) => p.to_string(),
+        None => {
+            let settings_path = agent_dir.join("settings.json");
+            std::fs::read_to_string(&settings_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| v.get("defaultProvider")?.as_str().map(str::to_string))
+                .unwrap_or_else(|| "soket".to_string())
+        }
+    };
+
+    if BUILTIN_PROVIDERS.contains(&effective_provider.as_str()) {
+        return Ok(());
+    }
+
+    let models_path = agent_dir.join("models.json");
+    let is_registered = std::fs::read_to_string(&models_path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("providers")?.as_array().cloned())
+        .map(|providers| {
+            providers
+                .iter()
+                .any(|p| p.get("id").and_then(|id| id.as_str()) == Some(effective_provider.as_str()))
+        })
+        .unwrap_or(false);
+
+    if !is_registered {
+        anyhow::bail!(
+            "provider {effective_provider:?} is not registered in {models_path:?} \
+             (or that file doesn't exist). Without this check, the harness would \
+             silently fall back to the built-in 'soket' provider instead of \
+             failing here — you'd see 'harness ready \u{2014} provider soket' below \
+             and every real message would fail with a confusing auth error \
+             against a provider you never configured. Fix: either add an entry \
+             for {effective_provider:?} to that file (see bridge/README.md \
+             'Running against the real hosted model'), or unset \
+             LOOP_SERVER_PROVIDER in .env to use 'soket' directly with \
+             SOKET_API_KEY / TENSORSTUDIO_API_KEY / LOOP_API_KEY instead."
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     load_dotenv();
@@ -144,6 +201,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     tracing::info!("booting AgentHarness (provider={provider:?}, model={model:?}, cwd={cwd:?})");
+
+    // A real, previously-hit failure mode: LOOP_SERVER_PROVIDER pointing at a
+    // custom provider (e.g. "tensorstudio-litellm") that was never actually
+    // registered in ~/.loop/agent/models.json — usually because that file
+    // (or all of ~/.loop) doesn't exist yet on this machine. Upstream's own
+    // bootstrap() doesn't error on this; an unrecognized provider id just
+    // silently falls back to the built-in "soket" default. The only visible
+    // symptom is "harness ready — provider soket" a few lines down, easy to
+    // miss, followed by every real message failing with a confusing auth
+    // error against a provider you never configured. Checking this
+    // ourselves, loudly, before bootstrap runs, turns a silent 10-minute
+    // debugging session into one clear error line.
+    validate_provider_registered(provider.as_deref())?;
 
     // Loop's harness itself (loop-agent, loop-ai) and loop-app-core's shared
     // bootstrap/runtime are used completely unmodified here — deliberately,

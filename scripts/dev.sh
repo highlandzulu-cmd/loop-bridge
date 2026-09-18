@@ -75,8 +75,24 @@ fi
 echo "==> Using config from .env"
 
 if ! command -v cargo >/dev/null 2>&1; then
-	echo "error: cargo not found — install Rust (https://rustup.rs) first." >&2
-	exit 1
+	echo
+	echo "==> Rust isn't installed (no 'cargo' on PATH) — this bridge needs it to build."
+	read -r -p "    Install it now via rustup.rs? [y/N]: " install_rust
+	if [ "$install_rust" = "y" ] || [ "$install_rust" = "Y" ]; then
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+		# shellcheck disable=SC1091
+		. "$HOME/.cargo/env"
+		if ! command -v cargo >/dev/null 2>&1; then
+			echo "error: rustup install finished but 'cargo' still isn't on PATH." >&2
+			echo "       Open a new terminal (or run: source \$HOME/.cargo/env) and re-run this script." >&2
+			exit 1
+		fi
+		echo "==> Rust installed."
+		echo
+	else
+		echo "error: cargo not found — install Rust (https://rustup.rs) first, then re-run." >&2
+		exit 1
+	fi
 fi
 if ! command -v npm >/dev/null 2>&1; then
 	echo "error: npm not found — install Node.js first." >&2
