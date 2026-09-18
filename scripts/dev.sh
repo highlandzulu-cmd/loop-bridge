@@ -25,12 +25,54 @@ set -m
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if [ -f .env ]; then
-	echo "==> Using config from .env"
-else
-	echo "==> No .env found — using whatever's configured in ~/.loop/agent/settings.json."
-	echo "    (copy .env.example to .env to point at a local model, a different port, etc.)"
+if [ ! -f .env ]; then
+	cp .env.example .env
+	echo "==> Created .env from .env.example (first run)."
 fi
+
+# A missing/unconfigured model provider used to be the single most confusing
+# failure mode here: the bridge would build fine, boot fine, log "harness
+# ready", and then every real message would just silently fail — no error,
+# no hint why. Catching it here, before anything starts, and actually
+# asking for what's missing beats that every time.
+#
+# Heuristic, not exhaustive: if LOOP_SERVER_PROVIDER is already set in .env,
+# assume a custom provider was deliberately configured (with its own key)
+# and don't second-guess it. Otherwise, this is about to fall back to the
+# harness's built-in "soket" default, which needs one of three possible
+# key env vars — check for any of those before assuming nothing's set up.
+if ! grep -qE '^LOOP_SERVER_PROVIDER=' .env 2>/dev/null; then
+	if [ -z "${SOKET_API_KEY:-}${TENSORSTUDIO_API_KEY:-}${LOOP_API_KEY:-}" ] \
+		&& ! grep -qE '^(SOKET_API_KEY|TENSORSTUDIO_API_KEY|LOOP_API_KEY)=' .env 2>/dev/null; then
+		echo
+		echo "==> No model provider configured yet."
+		echo "    This bridge needs a real API key — there's no default that works"
+		echo "    with zero setup. Pick one:"
+		echo
+		echo "    1) I have a Soket-shaped key (SOKET_API_KEY / TENSORSTUDIO_API_KEY / LOOP_API_KEY)"
+		echo "    2) I've already set up a custom provider — skip this (I'll edit .env myself)"
+		echo
+		read -r -p "    Choice [1/2]: " provider_choice
+		if [ "$provider_choice" = "1" ]; then
+			read -r -s -p "    Paste your API key: " api_key
+			echo
+			if [ -n "$api_key" ]; then
+				echo "SOKET_API_KEY=${api_key}" >>.env
+				echo "==> Saved to .env."
+			else
+				echo "error: no key entered — nothing saved. Add one to .env manually and re-run." >&2
+				exit 1
+			fi
+		else
+			echo "==> Skipping — make sure .env has LOOP_SERVER_PROVIDER/LOOP_SERVER_MODEL"
+			echo "    and that provider's key set, per bridge/README.md, or this will still"
+			echo "    boot fine and then fail silently on the first real message."
+		fi
+		echo
+	fi
+fi
+
+echo "==> Using config from .env"
 
 if ! command -v cargo >/dev/null 2>&1; then
 	echo "error: cargo not found — install Rust (https://rustup.rs) first." >&2
