@@ -186,7 +186,15 @@ fi
 # here, with a clear message, beats debugging that after the fact.
 WEB_PORT="${LOOP_SERVER_CORS_ORIGIN:-}"
 WEB_PORT="${WEB_PORT##*:}"
-WEB_PORT="${WEB_PORT:-5173}"
+# Falls back to 5173 both when unset (the normal case) and when it's not a
+# plain number at all — e.g. once the Codespaces block below rewrites this
+# to a full https://name-5173.app.github.dev URL, the naive ##*: strip
+# above would otherwise yield "//name-5173.app.github.dev", not a port.
+# Vite itself still always binds the plain local port regardless of what
+# public URL fronts it, so 5173 is the right thing to check here either way.
+case "$WEB_PORT" in
+'' | *[!0-9]*) WEB_PORT=5173 ;;
+esac
 if lsof -i ":${WEB_PORT}" >/dev/null 2>&1; then
 	echo "error: port ${WEB_PORT} is already in use by something else." >&2
 	echo "       Vite would silently move to a different port, which breaks CORS" >&2
@@ -194,6 +202,49 @@ if lsof -i ":${WEB_PORT}" >/dev/null 2>&1; then
 	echo "       to see what's using it), or set LOOP_SERVER_CORS_ORIGIN in .env to" >&2
 	echo "       match whatever port you actually want to use." >&2
 	exit 1
+fi
+
+# GitHub Codespaces runs the bridge and web server on a remote VM, not the
+# machine the browser is on — localhost/127.0.0.1 (the defaults everywhere
+# else) are simply wrong there; the browser needs each port's own public
+# forwarding URL instead. Without this, getting both pieces talking to each
+# other in a Codespace was a fully manual, error-prone dance: find both
+# URLs in the Ports tab, hand-edit two separate .env files, restart,
+# repeat every time the Codespace's name changes. Codespaces sets
+# CODESPACE_NAME and GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN
+# automatically — enough to construct both forwarding URLs ourselves,
+# every run, with no manual step at all.
+if [ -n "${CODESPACE_NAME:-}" ] && [ -n "${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN:-}" ]; then
+	FORWARDED_BRIDGE_URL="https://${CODESPACE_NAME}-${LOOP_SERVER_PORT:-8787}.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+	FORWARDED_WEB_URL="https://${CODESPACE_NAME}-${WEB_PORT}.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}"
+
+	echo "==> Detected GitHub Codespaces — using forwarded URLs instead of localhost:"
+	echo "    bridge: ${FORWARDED_BRIDGE_URL}"
+	echo "    web:    ${FORWARDED_WEB_URL}"
+
+	# Replace-or-append the same way the provider setup above does — safe to
+	# re-run on every launch without piling up duplicate/stale lines, and
+	# picks up a new URL automatically if this Codespace's name changed
+	# since last time (each new Codespace gets a new CODESPACE_NAME).
+	[ -s .env ] && [ -n "$(tail -c1 .env)" ] && echo >>.env
+	if grep -qE '^LOOP_SERVER_CORS_ORIGIN=' .env 2>/dev/null; then
+		sed -i.bak "s|^LOOP_SERVER_CORS_ORIGIN=.*|LOOP_SERVER_CORS_ORIGIN=${FORWARDED_WEB_URL}|" .env && rm -f .env.bak
+	else
+		echo "LOOP_SERVER_CORS_ORIGIN=${FORWARDED_WEB_URL}" >>.env
+	fi
+
+	mkdir -p web
+	[ -f web/.env ] || : >web/.env
+	[ -s web/.env ] && [ -n "$(tail -c1 web/.env)" ] && echo >>web/.env
+	if grep -qE '^VITE_LOOP_SERVER_URL=' web/.env 2>/dev/null; then
+		sed -i.bak "s|^VITE_LOOP_SERVER_URL=.*|VITE_LOOP_SERVER_URL=${FORWARDED_BRIDGE_URL}|" web/.env && rm -f web/.env.bak
+	else
+		echo "VITE_LOOP_SERVER_URL=${FORWARDED_BRIDGE_URL}" >>web/.env
+	fi
+	echo "    (Ports 8787 and ${WEB_PORT} must both be set to Public visibility in the"
+	echo "     Ports tab — Private ports need a separate GitHub auth step that a plain"
+	echo "     browser fetch() can't complete on its own.)"
+	echo
 fi
 
 echo "==> Building loop-server..."
