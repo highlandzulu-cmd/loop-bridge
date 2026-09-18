@@ -50,23 +50,96 @@ if ! grep -qE '^LOOP_SERVER_PROVIDER=' .env 2>/dev/null; then
 		echo "    with zero setup. Pick one:"
 		echo
 		echo "    1) I have a Soket-shaped key (SOKET_API_KEY / TENSORSTUDIO_API_KEY / LOOP_API_KEY)"
-		echo "    2) I've already set up a custom provider — skip this (I'll edit .env myself)"
+		echo "    2) I want to set up a different provider (e.g. TensorStudio LiteLLM, Ollama)"
+		echo "    3) I've already set this up manually — skip (I edited .env / models.json myself)"
 		echo
-		read -r -p "    Choice [1/2]: " provider_choice
+		read -r -p "    Choice [1/2/3]: " provider_choice
+		# .env not ending in a newline before an append merges the new line onto
+		# the end of the last existing one instead of starting a fresh one — hit
+		# repeatedly across several machines tonight (LOOP_SERVER_PROVIDER=...
+		# silently glued onto the end of a key value, breaking both). Guard every
+		# append below with this first.
+		ensure_trailing_newline() {
+			[ -s .env ] && [ -n "$(tail -c1 .env)" ] && echo >>.env
+			return 0
+		}
 		if [ "$provider_choice" = "1" ]; then
 			read -r -s -p "    Paste your API key: " api_key
 			echo
 			if [ -n "$api_key" ]; then
+				ensure_trailing_newline
 				echo "SOKET_API_KEY=${api_key}" >>.env
 				echo "==> Saved to .env."
 			else
 				echo "error: no key entered — nothing saved. Add one to .env manually and re-run." >&2
 				exit 1
 			fi
+		elif [ "$provider_choice" = "2" ]; then
+			# A custom provider needs *two* things registered, not just a key in
+			# .env: (1) LOOP_SERVER_PROVIDER/MODEL + the key, here in .env, and
+			# (2) the provider's id/URL/key-env-var/models registered in
+			# ~/.loop/agent/models.json — a separate file, outside this repo
+			# entirely, global to the machine. Missing just the second one is
+			# exactly the failure this project kept hitting on fresh machines:
+			# .env looks completely correct, the bridge boots fine, and it
+			# still silently falls back to the built-in "soket" provider
+			# because nothing registered the custom one anywhere the harness
+			# actually checks. Doing both together here, in one guided step,
+			# is the whole point of this branch.
+			echo
+			read -r -p "    Provider id (e.g. tensorstudio-litellm): " custom_id
+			read -r -p "    Base URL (e.g. https://api.tensorstudio.ai/v1): " custom_url
+			read -r -p "    Model id (e.g. qwen3-8-27b): " custom_model
+			read -r -p "    Env var name for its key (e.g. TENSORSTUDIO_LITELLM_KEY): " custom_key_env
+			read -r -s -p "    Paste the actual key value: " custom_key_value
+			echo
+			if [ -z "$custom_id" ] || [ -z "$custom_url" ] || [ -z "$custom_model" ] || [ -z "$custom_key_env" ] || [ -z "$custom_key_value" ]; then
+				echo "error: all five fields are required — nothing saved. Re-run and fill in each one." >&2
+				exit 1
+			fi
+			if ! command -v python3 >/dev/null 2>&1; then
+				echo "error: python3 not found — needed to safely edit models.json as JSON." >&2
+				echo "       Add this manually to ~/.loop/agent/models.json's \"providers\" array instead:" >&2
+				echo "       {\"id\": \"$custom_id\", \"name\": \"$custom_id\", \"baseUrl\": \"$custom_url\", \"apiKeyEnv\": [\"$custom_key_env\"], \"models\": [\"$custom_model\"]}" >&2
+				exit 1
+			fi
+			mkdir -p "$HOME/.loop/agent"
+			python3 - "$HOME/.loop/agent/models.json" "$custom_id" "$custom_url" "$custom_key_env" "$custom_model" <<'PYEOF'
+import json, os, sys
+path, pid, url, key_env, model = sys.argv[1:6]
+data = {"providers": []}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        data.setdefault("providers", [])
+    except Exception:
+        data = {"providers": []}
+data["providers"] = [p for p in data["providers"] if p.get("id") != pid]
+data["providers"].append({
+    "id": pid,
+    "name": pid,
+    "baseUrl": url,
+    "apiKeyEnv": [key_env],
+    "models": [model],
+})
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+print(f"    Registered {pid!r} in {path}")
+PYEOF
+			ensure_trailing_newline
+			{
+				echo "LOOP_SERVER_PROVIDER=${custom_id}"
+				echo "LOOP_SERVER_MODEL=${custom_model}"
+				echo "${custom_key_env}=${custom_key_value}"
+			} >>.env
+			echo "==> Saved provider config to .env and ~/.loop/agent/models.json."
 		else
 			echo "==> Skipping — make sure .env has LOOP_SERVER_PROVIDER/LOOP_SERVER_MODEL"
-			echo "    and that provider's key set, per bridge/README.md, or this will still"
-			echo "    boot fine and then fail silently on the first real message."
+			echo "    and that provider's key set, AND that it's registered in"
+			echo "    ~/.loop/agent/models.json, per bridge/README.md — otherwise this"
+			echo "    will still boot fine and then fail silently on the first message."
 		fi
 		echo
 	fi
