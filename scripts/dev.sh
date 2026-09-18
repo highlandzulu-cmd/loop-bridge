@@ -95,7 +95,8 @@ fi
 # browser with a generic, hard-to-diagnose "Failed to fetch" — CORS
 # blocking a cross-origin request, not a real crash anywhere. Catching it
 # here, with a clear message, beats debugging that after the fact.
-WEB_PORT="${LOOP_SERVER_CORS_ORIGIN##*:}"
+WEB_PORT="${LOOP_SERVER_CORS_ORIGIN:-}"
+WEB_PORT="${WEB_PORT##*:}"
 WEB_PORT="${WEB_PORT:-5173}"
 if lsof -i ":${WEB_PORT}" >/dev/null 2>&1; then
 	echo "error: port ${WEB_PORT} is already in use by something else." >&2
